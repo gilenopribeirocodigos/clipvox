@@ -3,8 +3,8 @@ services:
   - type: static
     name: clipvox-frontend
     env: static
-    buildCommand: cd frontend && npm install && npm run build
-    staticPublishPath: frontend/dist
+    buildCommand: cd front-end && npm install && npm run build
+    staticPublishPath: front-end/dist
     routes:
       - type: rewrite
         source: /*
