@@ -1,0 +1,22 @@
+services:
+  # ─── FRONTEND (Static Site) ─────────────────────────────────
+  - type: static
+    name: clipvox-frontend
+    env: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+  # ─── BACKEND (Web Service) ──────────────────────────────────
+  - type: web
+    name: clipvox-backend
+    env: python3
+    buildCommand: cd backend && pip install -r requirements.txt
+    startCommand: cd backend && python -m uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
