@@ -10,7 +10,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
 # ─── API Keys ─────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-STABILITY_API_KEY = os.getenv("STABILITY_API_KEY", "")
+STABILITY_API_KEY = os.getenv("STABILITY_API_KEY", "")  # ← NOVO
 
 # ─── Storage ──────────────────────────────────────────────────
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/tmp/clipvox_uploads")
@@ -21,21 +21,15 @@ FREE_CREDITS_ON_SIGNUP = 500
 CREDITS_PER_VIDEO = 100
 
 # ─── Cinematic Scene Calculation ─────────────────────────────
-# Esses valores determinam a qualidade cinematográfica
+SCENE_DURATION_LOW_ENERGY = 6.5
+SCENE_DURATION_MID_ENERGY = 4.0
+SCENE_DURATION_HIGH_ENERGY = 2.5
 
-# Duração de scenes baseada em energia
-SCENE_DURATION_LOW_ENERGY = 6.5   # segundos - cenas longas e contemplativas
-SCENE_DURATION_MID_ENERGY = 4.0   # segundos - ritmo médio
-SCENE_DURATION_HIGH_ENERGY = 2.5  # segundos - cortes rápidos e dinâmicos
+MIN_SCENES = 20
+MAX_SCENES = 120
 
-# Limites de scenes por vídeo
-MIN_SCENES = 20   # vídeos muito curtos
-MAX_SCENES = 120  # limite técnico e de custo
+CINEMATIC_DENSITY_FACTOR = 1.6
 
-# Fator de densidade de cortes (quanto maior, mais scenes)
-CINEMATIC_DENSITY_FACTOR = 1.6  # 1.0 = padrão, 2.0 = dobro de scenes
-
-# Camera movements pool (variedade cinematográfica)
 CAMERA_MOVEMENTS = [
     "static shot",
     "slow pan left to right",
@@ -54,5 +48,4 @@ CAMERA_MOVEMENTS = [
     "zoom out"
 ]
 
-# Transition types
 TRANSITIONS = ["cut", "dissolve", "fade", "wipe"]
