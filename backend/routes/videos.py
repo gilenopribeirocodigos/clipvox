@@ -7,6 +7,7 @@ from config import UPLOAD_DIR, CREDITS_PER_VIDEO
 from services.audio_analysis import analyze_audio_cinematic
 from services.scene_calculator import calculate_cinematic_scenes, get_scene_summary
 from services.ai_concept import generate_creative_concept_with_prompts
+from services.video_generation import generate_scenes_batch
 
 router = APIRouter()
 
@@ -101,7 +102,7 @@ def process_video_pipeline(job_id: str):
     try:
         # ─── STEP 1: PLAN ─────────────────────────────────────
         update_job(job_id, status="processing", progress=5, current_step="plan")
-        time.sleep(1)  # simula processamento
+        time.sleep(1)
         
         # ─── STEP 2: INPUT ANALYZING ─────────────────────────
         update_job(job_id, progress=10, current_step="analyzing")
@@ -109,7 +110,6 @@ def process_video_pipeline(job_id: str):
         print(f"🎵 Analyzing audio: {job['audio_path']}")
         audio_metadata = analyze_audio_cinematic(job["audio_path"])
         
-        # Save audio metadata
         job["audio_duration"] = audio_metadata["duration"]
         job["audio_bpm"] = audio_metadata["bpm"]
         job["audio_key"] = audio_metadata["key"]
@@ -150,26 +150,41 @@ def process_video_pipeline(job_id: str):
         update_job(job_id, progress=58)
         time.sleep(2)
         
-        # ─── STEP 5: SCENES ───────────────────────────────────
+        # ─── STEP 5: GENERATE SCENE IMAGES (STABILITY AI) ────
         update_job(job_id, progress=60, current_step="scenes")
         
-        # Extract scenes from concept
-        scenes = creative_concept.get("scenes", [])
+        print(f"🎨 Generating {len(creative_concept['scenes'])} scene images with Stability AI...")
         
-        # Add mock image URLs (em produção, geraria com Stability AI)
-        for i, scene in enumerate(scenes):
-            scene["image_url"] = f"/api/files/mock_scene_{i+1}.jpg"
+        # Gerar imagens com Stability AI
+        scenes_with_images = generate_scenes_batch(
+            creative_concept["scenes"],
+            style=job["style"]
+        )
         
-        job["scenes"] = scenes
+        job["scenes"] = scenes_with_images
         
-        update_job(job_id, progress=82)
-        time.sleep(2)
+        # Calcular progresso dinamicamente baseado em quantas scenes foram geradas
+        scenes_generated = sum(1 for s in scenes_with_images if s.get("image_generated"))
+        progress_scenes = 60 + int((scenes_generated / len(scenes_with_images)) * 20)
+        update_job(job_id, progress=min(progress_scenes, 80))
+        
+        print(f"✅ Generated {scenes_generated}/{len(scenes_with_images)} scenes successfully")
+        
+        time.sleep(1)
         
         # ─── STEP 6: VIDEO SEGMENTS ───────────────────────────
         update_job(job_id, progress=85, current_step="segments")
         
-        # Group scenes into segments (em produção, geraria vídeos)
+        # Group scenes into segments
         segments = scene_structure["segments"]
+        
+        # Adicionar info de quais scenes têm imagem
+        for segment in segments:
+            segment["scenes_with_images"] = [
+                s for s in scenes_with_images 
+                if s["scene_number"] in segment["scenes"]
+            ]
+        
         job["segments"] = segments
         
         update_job(job_id, progress=95)
@@ -192,7 +207,8 @@ def process_video_pipeline(job_id: str):
         )
         
         print(f"✅ Video generation completed: {job_id}")
-        print(f"   Generated {len(scenes)} scenes across {len(segments)} segments")
+        print(f"   Generated {len(scenes_with_images)} scenes across {len(segments)} segments")
+        print(f"   Successfully generated: {scenes_generated}/{len(scenes_with_images)} images")
         
     except Exception as e:
         print(f"❌ Error processing job {job_id}: {e}")
