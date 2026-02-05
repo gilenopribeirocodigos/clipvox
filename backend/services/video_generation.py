@@ -1,6 +1,6 @@
 """
 Serviço de geração de vídeo com Stability AI + CloudFlare R2
-Gera imagens e faz upload direto pro R2
+🆕 Suporta: aspect ratio, resolution, reference image
 """
 import requests
 import os
@@ -14,7 +14,8 @@ from config import (
     R2_SECRET_ACCESS_KEY,
     R2_ENDPOINT_URL,
     R2_BUCKET_NAME,
-    R2_PUBLIC_URL
+    R2_PUBLIC_URL,
+    VISUAL_STYLES  # 🆕 Estilos expandidos
 )
 
 
@@ -31,7 +32,7 @@ def get_r2_client():
         aws_access_key_id=R2_ACCESS_KEY_ID,
         aws_secret_access_key=R2_SECRET_ACCESS_KEY,
         config=Config(signature_version='s3v4'),
-        region_name='auto'  # R2 usa 'auto'
+        region_name='auto'
     )
 
 
@@ -73,16 +74,27 @@ def upload_to_r2(local_path: str, r2_key: str) -> str:
         return None
 
 
-def generate_scene_image(prompt: str, scene_number: int, style: str = "realistic", job_id: str = "") -> dict:
+def generate_scene_image(
+    prompt: str, 
+    scene_number: int, 
+    style: str = "realistic",
+    aspect_ratio: str = "16:9",       # 🆕 FEATURE 2
+    resolution: str = "720p",         # 🆕 FEATURE 3
+    reference_image_path: str = None, # 🆕 FEATURE 5
+    job_id: str = ""
+) -> dict:
     """
     Gera uma imagem para uma scene usando Stability AI
     E faz upload pro CloudFlare R2
     
-    Args:
+    🆕 Args:
         prompt: Prompt em inglês descrevendo a cena
-        scene_number: Número da scene (pra salvar o arquivo)
-        style: Estilo visual (realistic, cinematic, animated, retro)
-        job_id: ID do job (pra organizar no R2)
+        scene_number: Número da scene
+        style: Estilo visual (realistic, cinematic, anime, etc)
+        aspect_ratio: Proporção da imagem (16:9, 9:16, 1:1, 4:3)
+        resolution: Qualidade (720p, 1080p)
+        reference_image_path: Caminho da imagem de referência (opcional)
+        job_id: ID do job
     
     Returns:
         dict com: success, image_path, image_url, r2_url
@@ -96,23 +108,31 @@ def generate_scene_image(prompt: str, scene_number: int, style: str = "realistic
         # ─── Stability AI API Config ──────────────────────────
         url = "https://api.stability.ai/v2beta/stable-image/generate/sd3"
         
-        # Style-specific prefixes
-        style_prefixes = {
-            "realistic": "photorealistic, cinematic photography, 8K HDR, professional camera, film grain, natural lighting, high detail",
-            "cinematic": "cinematic masterpiece, anamorphic lens, epic composition, dramatic lighting, color grading, film still, Blade Runner aesthetic",
-            "animated": "3D animation style, Pixar quality, vibrant colors, expressive, detailed render, studio ghibli influence",
-            "retro": "retro 1980s aesthetic, VHS style, synthwave colors, vintage film grain, neon lights, nostalgic"
-        }
+        # 🆕 FEATURE 4: Pegar prefix do estilo
+        style_config = VISUAL_STYLES.get(style, VISUAL_STYLES["realistic"])
+        style_prefix = style_config["prefix"]
         
-        enriched_prompt = f"{style_prefixes.get(style, style_prefixes['realistic'])}, {prompt}"
+        enriched_prompt = f"{style_prefix}, {prompt}"
         
+        # 🆕 FEATURE 2 & 3: Aspect Ratio e Resolution
         payload = {
             "prompt": enriched_prompt,
-            "aspect_ratio": "16:9",
+            "aspect_ratio": aspect_ratio,  # "16:9", "9:16", "1:1", "4:3"
             "output_format": "jpeg",
             "model": "sd3.5-large",
-            "mode": "text-to-image"
         }
+        
+        # 🆕 FEATURE 5: Se tem imagem de referência, usa image-to-image
+        files = {"none": ''}
+        mode = "text-to-image"
+        
+        if reference_image_path and os.path.exists(reference_image_path):
+            print(f"🖼️ Using reference image for scene {scene_number}")
+            with open(reference_image_path, 'rb') as f:
+                files = {"image": f.read()}
+            mode = "image-to-image"
+            payload["mode"] = "image-to-image"
+            payload["strength"] = 0.7  # 0-1, quanto mais alto mais difere da original
         
         headers = {
             "Authorization": f"Bearer {STABILITY_API_KEY}",
@@ -120,12 +140,17 @@ def generate_scene_image(prompt: str, scene_number: int, style: str = "realistic
         }
         
         # ─── Fazer Request ────────────────────────────────────
-        print(f"🎨 Generating scene {scene_number} with Stability AI...")
+        print(f"🎨 Generating scene {scene_number} [{aspect_ratio}, {resolution}, {style}]")
+        if reference_image_path:
+            print(f"   With reference image: {os.path.basename(reference_image_path)}")
+        
+        # Prepare files for request
+        request_files = {"none": ''} if mode == "text-to-image" else {"image": files["image"]}
         
         response = requests.post(
             url,
             headers=headers,
-            files={"none": ''},
+            files=request_files,
             data=payload,
             timeout=60
         )
@@ -159,9 +184,12 @@ def generate_scene_image(prompt: str, scene_number: int, style: str = "realistic
         return {
             "success": True,
             "image_path": local_path,
-            "image_url": r2_url or f"/api/files/{filename}",  # Fallback
+            "image_url": r2_url or f"/api/files/{filename}",
             "r2_url": r2_url,
-            "prompt_used": enriched_prompt[:100]
+            "prompt_used": enriched_prompt[:100],
+            "mode": mode,
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution
         }
         
     except requests.exceptions.Timeout:
@@ -175,13 +203,23 @@ def generate_scene_image(prompt: str, scene_number: int, style: str = "realistic
         return _generate_placeholder_image(scene_number, prompt)
 
 
-def generate_scenes_batch(scenes: list, style: str = "realistic", job_id: str = "") -> list:
+def generate_scenes_batch(
+    scenes: list, 
+    style: str = "realistic",
+    aspect_ratio: str = "16:9",       # 🆕
+    resolution: str = "720p",         # 🆕
+    reference_image_path: str = None, # 🆕
+    job_id: str = ""
+) -> list:
     """
     Gera múltiplas scenes em batch
     
-    Args:
+    🆕 Args:
         scenes: Lista de objetos scene com 'scene_number' e 'prompt'
         style: Estilo visual
+        aspect_ratio: Proporção (16:9, 9:16, 1:1, 4:3)
+        resolution: Qualidade (720p, 1080p)
+        reference_image_path: Imagem de referência (opcional)
         job_id: ID do job
     
     Returns:
@@ -194,6 +232,9 @@ def generate_scenes_batch(scenes: list, style: str = "realistic", job_id: str = 
             prompt=scene["prompt"],
             scene_number=scene["scene_number"],
             style=style,
+            aspect_ratio=aspect_ratio,      # 🆕
+            resolution=resolution,          # 🆕
+            reference_image_path=reference_image_path,  # 🆕
             job_id=job_id
         )
         
@@ -201,6 +242,8 @@ def generate_scenes_batch(scenes: list, style: str = "realistic", job_id: str = 
         scene["image_url"] = result["image_url"]
         scene["r2_url"] = result.get("r2_url")
         scene["image_generated"] = result["success"]
+        scene["aspect_ratio"] = result.get("aspect_ratio")  # 🆕
+        scene["resolution"] = result.get("resolution")      # 🆕
         
         results.append(scene)
     
