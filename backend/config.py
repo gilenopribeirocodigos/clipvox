@@ -1,4 +1,6 @@
 import os
+import boto3
+from typing import Optional
 
 # ─── Database ─────────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./clipvox.db")
@@ -125,3 +127,37 @@ RESOLUTIONS = {
         "cost_multiplier": 1.54  # ~54% mais caro
     }
 }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🆕 CLOUDFLARE R2 CLIENT (necessário para video_generation.py)
+# ═══════════════════════════════════════════════════════════════════
+def get_r2_client() -> Optional[any]:
+    """
+    Cria e retorna um cliente boto3 para CloudFlare R2
+    
+    Returns:
+        boto3.client ou None se credenciais não estiverem configuradas
+    """
+    
+    # Verifica se todas as credenciais R2 estão configuradas
+    if not all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL]):
+        print("⚠️ CloudFlare R2 credentials not configured")
+        return None
+    
+    try:
+        # Criar cliente boto3 apontando para CloudFlare R2
+        r2_client = boto3.client(
+            's3',
+            endpoint_url=R2_ENDPOINT_URL,
+            aws_access_key_id=R2_ACCESS_KEY_ID,
+            aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+            region_name='auto'  # CloudFlare R2 usa 'auto'
+        )
+        
+        print("✅ CloudFlare R2 client initialized")
+        return r2_client
+        
+    except Exception as e:
+        print(f"❌ Error creating R2 client: {e}")
+        return None
