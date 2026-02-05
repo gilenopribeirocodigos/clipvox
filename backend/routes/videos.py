@@ -150,25 +150,28 @@ def process_video_pipeline(job_id: str):
         update_job(job_id, progress=58)
         time.sleep(2)
         
-        # ─── STEP 5: GENERATE SCENE IMAGES (STABILITY AI) ────
+        # ─── STEP 5: GENERATE SCENE IMAGES (STABILITY AI + R2) ─
         update_job(job_id, progress=60, current_step="scenes")
         
         print(f"🎨 Generating {len(creative_concept['scenes'])} scene images with Stability AI...")
+        print(f"📤 Uploading to CloudFlare R2...")
         
-        # Gerar imagens com Stability AI
+        # Gerar imagens com Stability AI e upload pro R2
         scenes_with_images = generate_scenes_batch(
             creative_concept["scenes"],
-            style=job["style"]
+            style=job["style"],
+            job_id=job_id  # ← Passa o job_id pro R2 organizar
         )
         
         job["scenes"] = scenes_with_images
         
-        # Calcular progresso dinamicamente baseado em quantas scenes foram geradas
+        # Calcular progresso dinamicamente
         scenes_generated = sum(1 for s in scenes_with_images if s.get("image_generated"))
         progress_scenes = 60 + int((scenes_generated / len(scenes_with_images)) * 20)
         update_job(job_id, progress=min(progress_scenes, 80))
         
         print(f"✅ Generated {scenes_generated}/{len(scenes_with_images)} scenes successfully")
+        print(f"☁️ Images stored in CloudFlare R2")
         
         time.sleep(1)
         
@@ -209,6 +212,7 @@ def process_video_pipeline(job_id: str):
         print(f"✅ Video generation completed: {job_id}")
         print(f"   Generated {len(scenes_with_images)} scenes across {len(segments)} segments")
         print(f"   Successfully generated: {scenes_generated}/{len(scenes_with_images)} images")
+        print(f"   ☁️ All images stored permanently in CloudFlare R2")
         
     except Exception as e:
         print(f"❌ Error processing job {job_id}: {e}")
