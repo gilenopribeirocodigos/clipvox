@@ -72,33 +72,83 @@ function Navbar({ onBack, credits }) {
 
 // ─── UPLOAD ZONE ──────────────────────────────────────────────
 function UploadZone({ onStart }) {
-  const [dragging,   setDragging]   = useState(false)
-  const [file,       setFile]       = useState(null)
-  const [desc,       setDesc]       = useState('')
-  const [style,      setStyle]      = useState('realistic')
-  const fileRef                     = useRef()
+  const [dragging,     setDragging]     = useState(false)
+  const [file,         setFile]         = useState(null)
+  const [desc,         setDesc]         = useState('')
+  const [style,        setStyle]        = useState('realistic')
+  const [duration,     setDuration]     = useState('full')
+  const [customDur,    setCustomDur]    = useState(30)
+  const [aspectRatio,  setAspectRatio]  = useState('16:9')
+  const [resolution,   setResolution]   = useState('720p')
+  const [refImage,     setRefImage]     = useState(null)
+  const [refPreview,   setRefPreview]   = useState(null)
+  const fileRef                         = useRef()
+  const imageRef                        = useRef()
 
+  // 🆕 FEATURE 4: ESTILOS EXPANDIDOS (10+ estilos)
   const styles = [
-    { id:'realistic', label:'Fotorrealista' },
-    { id:'cinematic', label:'Cinemático'    },
-    { id:'animated',  label:'Animado'       },
-    { id:'retro',     label:'Retro'         }
+    { id:'realistic',       label:'Fotorrealista',   emoji:'📷' },
+    { id:'cinematic',       label:'Cinemático',      emoji:'🎬' },
+    { id:'animated',        label:'Animado 3D',      emoji:'🎨' },
+    { id:'retro',           label:'Retro 80s',       emoji:'📺' },
+    { id:'anime',           label:'Anime',           emoji:'🇯🇵' },
+    { id:'cyberpunk',       label:'Cyberpunk',       emoji:'🌃' },
+    { id:'fantasy',         label:'Fantasia',        emoji:'🧙' },
+    { id:'minimalist',      label:'Minimalista',     emoji:'⬜' },
+    { id:'vintage',         label:'Vintage',         emoji:'📽️' },
+    { id:'oil_painting',    label:'Pintura Óleo',    emoji:'🖼️' }
   ]
 
-  const accept = f => {
+  // 🆕 FEATURE 1: DURATION PRESETS
+  const durations = [
+    { value: '10',  label: '10s'  },
+    { value: '15',  label: '15s'  },
+    { value: '30',  label: '30s'  },
+    { value: '60',  label: '1min' },
+    { value: '120', label: '2min' },
+    { value: 'full', label: 'Completo' },
+    { value: 'custom', label: 'Personalizado' }
+  ]
+
+  // 🆕 FEATURE 2: ASPECT RATIOS
+  const aspectRatios = [
+    { value: '16:9',  label: 'Horizontal',      desc: '1920×1080' },
+    { value: '9:16',  label: 'Vertical',        desc: '1080×1920' },
+    { value: '1:1',   label: 'Quadrado',        desc: '1080×1080' },
+    { value: '4:3',   label: 'Clássico',        desc: '1440×1080' }
+  ]
+
+  // 🆕 FEATURE 3: RESOLUÇÕES
+  const resolutions = [
+    { value: '720p',  label: '720p',  desc: 'Rápido' },
+    { value: '1080p', label: '1080p', desc: 'Premium' }
+  ]
+
+  const acceptAudio = f => {
     if (f && /^audio\//.test(f.type)) setFile(f)
   }
 
-  return (
-    <div style={{ maxWidth:680, margin:'0 auto', padding:'44px 24px' }}>
-      <h1 style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:30, letterSpacing:2, color:'#fff', marginBottom:4 }}>NOVO VIDEOCLIPE</h1>
-      <p style={{ color:'#6b7280', fontSize:13, marginBottom:28 }}>Faça upload da sua música e configure o estilo desejado</p>
+  // 🆕 FEATURE 5: UPLOAD DE IMAGEM DE REFERÊNCIA
+  const acceptImage = f => {
+    if (f && /^image\//.test(f.type)) {
+      setRefImage(f)
+      const reader = new FileReader()
+      reader.onload = e => setRefPreview(e.target.result)
+      reader.readAsDataURL(f)
+    }
+  }
 
+  return (
+    <div style={{ maxWidth:780, margin:'0 auto', padding:'44px 24px' }}>
+      <h1 style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:30, letterSpacing:2, color:'#fff', marginBottom:4 }}>NOVO VIDEOCLIPE</h1>
+      <p style={{ color:'#6b7280', fontSize:13, marginBottom:28 }}>Configure todos os detalhes do seu videoclipe com IA</p>
+
+      {/* AUDIO UPLOAD */}
       <div
         onClick={() => fileRef.current.click()}
         onDragOver={e => { e.preventDefault(); setDragging(true) }}
         onDragLeave={() => setDragging(false)}
-        onDrop={e => { e.preventDefault(); setDragging(false); accept(e.dataTransfer.files[0]) }}
+        onDrop={e => { e.preventDefault(); setDragging(false); acceptAudio(e.dataTransfer.files[0]) }}
         style={{
           border: dragging ? '2px dashed #f97316' : file ? '2px dashed rgba(249,115,22,.5)' : '2px dashed rgba(255,255,255,.12)',
           borderRadius:18, padding:'44px 20px', textAlign:'center', cursor:'pointer',
@@ -106,7 +156,7 @@ function UploadZone({ onStart }) {
           transition:'all .3s', marginBottom:22
         }}
       >
-        <input ref={fileRef} type="file" accept="audio/*" style={{ display:'none' }} onChange={e => accept(e.target.files[0])} />
+        <input ref={fileRef} type="file" accept="audio/*" style={{ display:'none' }} onChange={e => acceptAudio(e.target.files[0])} />
         {file ? (
           <>
             <div style={{ fontSize:34, marginBottom:8 }}>🎵</div>
@@ -123,21 +173,114 @@ function UploadZone({ onStart }) {
         )}
       </div>
 
-      <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>ESTILO VISUAL</label>
-      <div style={{ display:'flex', gap:8, marginBottom:22 }}>
-        {styles.map(s => (
-          <div key={s.id} onClick={() => setStyle(s.id)} style={{
-            flex:'1 1 0', padding:'11px 8px', borderRadius:12, cursor:'pointer', textAlign:'center',
-            background: style===s.id ? 'rgba(249,115,22,.1)'  : 'rgba(16,16,24,.6)',
-            border:     style===s.id ? '1px solid rgba(249,115,22,.4)' : '1px solid rgba(255,255,255,.07)',
+      {/* 🆕 FEATURE 1: DURATION PRESET */}
+      <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>⏱️ DURAÇÃO DO VÍDEO</label>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:6, marginBottom:16 }}>
+        {durations.map(d => (
+          <div key={d.value} onClick={() => setDuration(d.value)} style={{
+            padding:'9px 6px', borderRadius:10, cursor:'pointer', textAlign:'center',
+            background: duration===d.value ? 'rgba(249,115,22,.1)'  : 'rgba(16,16,24,.6)',
+            border:     duration===d.value ? '1px solid rgba(249,115,22,.4)' : '1px solid rgba(255,255,255,.07)',
             transition:'all .25s'
           }}>
-            <div style={{ color: style===s.id ? '#f97316' : '#9ca3af', fontSize:13, fontWeight:500 }}>{s.label}</div>
+            <div style={{ color: duration===d.value ? '#f97316' : '#9ca3af', fontSize:12, fontWeight:500 }}>{d.label}</div>
+          </div>
+        ))}
+      </div>
+      {duration === 'custom' && (
+        <input
+          type="number" value={customDur} onChange={e => setCustomDur(e.target.value)}
+          placeholder="Segundos" min="5" max="300"
+          style={{
+            width:'100%', padding:'10px 14px', borderRadius:10, marginBottom:16,
+            background:'rgba(16,16,24,.8)', border:'1px solid rgba(255,255,255,.1)',
+            color:'#fff', fontSize:13, outline:'none'
+          }}
+        />
+      )}
+
+      {/* 🆕 FEATURE 2: ASPECT RATIO */}
+      <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>📐 PROPORÇÃO (ASPECT RATIO)</label>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8, marginBottom:22 }}>
+        {aspectRatios.map(ar => (
+          <div key={ar.value} onClick={() => setAspectRatio(ar.value)} style={{
+            padding:'12px 10px', borderRadius:12, cursor:'pointer', textAlign:'center',
+            background: aspectRatio===ar.value ? 'rgba(249,115,22,.1)'  : 'rgba(16,16,24,.6)',
+            border:     aspectRatio===ar.value ? '1px solid rgba(249,115,22,.4)' : '1px solid rgba(255,255,255,.07)',
+            transition:'all .25s'
+          }}>
+            <div style={{ color: aspectRatio===ar.value ? '#f97316' : '#fff', fontSize:13, fontWeight:600, marginBottom:2 }}>{ar.label}</div>
+            <div style={{ color:'#4b5563', fontSize:10 }}>{ar.desc}</div>
           </div>
         ))}
       </div>
 
-      <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>DESCRIÇÃO DO VIDEOCLIPE</label>
+      {/* 🆕 FEATURE 3: RESOLUÇÃO */}
+      <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>🎥 RESOLUÇÃO</label>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:22 }}>
+        {resolutions.map(res => (
+          <div key={res.value} onClick={() => setResolution(res.value)} style={{
+            padding:'12px', borderRadius:12, cursor:'pointer', textAlign:'center',
+            background: resolution===res.value ? 'rgba(249,115,22,.1)'  : 'rgba(16,16,24,.6)',
+            border:     resolution===res.value ? '1px solid rgba(249,115,22,.4)' : '1px solid rgba(255,255,255,.07)',
+            transition:'all .25s'
+          }}>
+            <div style={{ color: resolution===res.value ? '#f97316' : '#fff', fontSize:14, fontWeight:600, marginBottom:2 }}>{res.label}</div>
+            <div style={{ color:'#4b5563', fontSize:11 }}>{res.desc}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* 🆕 FEATURE 4: ESTILOS EXPANDIDOS */}
+      <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>🎨 ESTILO VISUAL</label>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:8, marginBottom:22 }}>
+        {styles.map(s => (
+          <div key={s.id} onClick={() => setStyle(s.id)} style={{
+            padding:'11px 8px', borderRadius:12, cursor:'pointer', textAlign:'center',
+            background: style===s.id ? 'rgba(249,115,22,.1)'  : 'rgba(16,16,24,.6)',
+            border:     style===s.id ? '1px solid rgba(249,115,22,.4)' : '1px solid rgba(255,255,255,.07)',
+            transition:'all .25s'
+          }}>
+            <div style={{ fontSize:22, marginBottom:3 }}>{s.emoji}</div>
+            <div style={{ color: style===s.id ? '#f97316' : '#9ca3af', fontSize:11, fontWeight:500 }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* 🆕 FEATURE 5: UPLOAD DE IMAGEM DE REFERÊNCIA */}
+      <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>👤 IMAGEM DE REFERÊNCIA (Opcional)</label>
+      <div
+        onClick={() => imageRef.current.click()}
+        style={{
+          border: refImage ? '2px dashed rgba(249,115,22,.5)' : '2px dashed rgba(255,255,255,.12)',
+          borderRadius:12, padding:refImage ? '12px' : '24px', textAlign:'center', cursor:'pointer',
+          background:'rgba(16,16,24,.6)', transition:'all .3s', marginBottom:22
+        }}
+      >
+        <input ref={imageRef} type="file" accept="image/*" style={{ display:'none' }} onChange={e => acceptImage(e.target.files[0])} />
+        {refImage ? (
+          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+            <img src={refPreview} style={{ width:60, height:60, borderRadius:8, objectFit:'cover' }} alt="Reference" />
+            <div style={{ flex:1, textAlign:'left' }}>
+              <div style={{ color:'#fff', fontSize:13, fontWeight:600 }}>{refImage.name}</div>
+              <div style={{ color:'#6b7280', fontSize:11, marginTop:2 }}>A IA usará esta imagem como referência</div>
+            </div>
+            <button onClick={e => { e.stopPropagation(); setRefImage(null); setRefPreview(null) }} style={{
+              background:'rgba(255,255,255,.05)', border:'1px solid rgba(255,255,255,.1)',
+              borderRadius:6, padding:'6px 10px', color:'#6b7280', fontSize:11, cursor:'pointer'
+            }}>✕ Remover</button>
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize:28, marginBottom:6 }}>🖼️</div>
+            <div style={{ color:'#fff', fontSize:13, fontWeight:600, marginBottom:4 }}>Adicionar personagem/rosto de referência</div>
+            <div style={{ color:'#6b7280', fontSize:11 }}>A IA gerará cenas usando esta pessoa/personagem</div>
+          </>
+        )}
+      </div>
+
+      {/* DESCRIÇÃO */}
+      <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>📝 DESCRIÇÃO DO VIDEOCLIPE</label>
       <textarea
         value={desc} onChange={e => setDesc(e.target.value)} rows={3}
         placeholder="Ex: Videoclipe sobre o universo do forró nordestino, com cenas da caatinga e festa..."
@@ -151,8 +294,17 @@ function UploadZone({ onStart }) {
         onBlur={e => e.target.style.borderColor='rgba(255,255,255,.1)'}
       />
 
+      {/* BOTÃO GERAR */}
       <button
-        onClick={() => file && onStart({ file, desc, style })}
+        onClick={() => file && onStart({ 
+          file, 
+          desc, 
+          style, 
+          duration: duration === 'custom' ? customDur : duration,
+          aspectRatio,
+          resolution,
+          refImage  // 🆕 Envia imagem de referência
+        })}
         style={{
           width:'100%', padding:'15px',
           background: file ? 'linear-gradient(135deg,#f97316,#ea580c)' : 'rgba(60,60,70,.5)',
@@ -164,13 +316,24 @@ function UploadZone({ onStart }) {
         onMouseEnter={e => file && (e.target.style.boxShadow='0 6px 28px rgba(249,115,22,.5)')}
         onMouseLeave={e => file && (e.target.style.boxShadow='0 4px 20px rgba(249,115,22,.35)')}
       >
-        {file ? '🎬 Gerar Videoclipe' : 'Selecione um arquivo primeiro'}
+        {file ? '🎬 Gerar Videoclipe com IA' : 'Selecione um arquivo primeiro'}
       </button>
+
+      {/* INFO DE CUSTO */}
+      {file && (
+        <div style={{ marginTop:14, padding:'10px 14px', background:'rgba(249,115,22,.05)', border:'1px solid rgba(249,115,22,.15)', borderRadius:10 }}>
+          <div style={{ color:'#f97316', fontSize:11, fontWeight:600, marginBottom:3 }}>💰 CUSTO ESTIMADO</div>
+          <div style={{ color:'#6b7280', fontSize:11 }}>
+            Resolução {resolution} · Estilo {styles.find(s => s.id === style)?.label}
+            {refImage && ' · Com imagem de referência'}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-// ─── LEFT PANEL ───────────────────────────────────────────────
+// ─── LEFT PANEL (Mesmo código) ────────────────────────────────
 function LeftPanel({ fileName, jobStatus, onReset }) {
   const steps = ['plan', 'analyzing', 'creative', 'scenes', 'segments', 'merge']
   const stepLabels = {
@@ -236,7 +399,7 @@ function LeftPanel({ fileName, jobStatus, onReset }) {
   )
 }
 
-// ─── SCENE IMAGE COMPONENT ────────────────────────────────────
+// ─── SCENE IMAGE (Mesmo código) ───────────────────────────────
 function SceneImage({ scene, index }) {
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState(false)
@@ -298,7 +461,7 @@ function SceneImage({ scene, index }) {
   )
 }
 
-// ─── CANVAS SECTIONS ──────────────────────────────────────────
+// ─── CREATIVE CONCEPT (Mesmo código) ──────────────────────────
 function CreativeConceptCard({ concept }) {
   if (!concept) return null
   
@@ -312,13 +475,6 @@ function CreativeConceptCard({ concept }) {
       <div style={{ marginBottom:16 }}>
         <div style={{ fontSize:11, color:'#f97316', fontWeight:600, letterSpacing:1, marginBottom:6 }}>🎬 DIRECTOR'S VISION</div>
         <p style={{ color:'#9ca3af', fontSize:13, lineHeight:1.7 }}>{concept.directors_vision}</p>
-      </div>
-
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10, marginBottom:16 }}>
-        <div style={{ background:'rgba(255,255,255,.03)', borderRadius:10, padding:12 }}>
-          <div style={{ fontSize:10, color:'#4b5563', marginBottom:3 }}>🖼️ Style</div>
-          <div style={{ color:'#fff', fontSize:14, fontWeight:600 }}>{concept.primary_visual_style?.substring(0, 20)}...</div>
-        </div>
       </div>
 
       {concept.color_palette && (
@@ -338,6 +494,7 @@ function CreativeConceptCard({ concept }) {
   )
 }
 
+// ─── SCENES GRID (Mesmo código) ───────────────────────────────
 function ScenesGrid({ scenes }) {
   if (!scenes || scenes.length === 0) return null
   
@@ -373,7 +530,7 @@ function ScenesGrid({ scenes }) {
   )
 }
 
-// ─── MAIN DASHBOARD ──────────────────────────────────────────
+// ─── MAIN DASHBOARD ───────────────────────────────────────────
 export default function Dashboard({ onBack }) {
   const [phase, setPhase]       = useState('upload')
   const [credits, setCredits]   = useState(500)
@@ -388,7 +545,7 @@ export default function Dashboard({ onBack }) {
     }
   }, [])
 
-  const startGeneration = async ({ file, desc, style }) => {
+  const startGeneration = async ({ file, desc, style, duration, aspectRatio, resolution, refImage }) => {
     try {
       setFileName(file.name)
       setPhase('processing')
@@ -398,6 +555,10 @@ export default function Dashboard({ onBack }) {
       formData.append('audio', file)
       formData.append('description', desc)
       formData.append('style', style)
+      formData.append('duration', duration)               // 🆕 Duration
+      formData.append('aspect_ratio', aspectRatio)        // 🆕 Aspect Ratio
+      formData.append('resolution', resolution)           // 🆕 Resolution
+      if (refImage) formData.append('ref_image', refImage) // 🆕 Reference Image
 
       const response = await fetch(`${API_URL}/api/videos/generate`, {
         method: 'POST',
@@ -407,7 +568,6 @@ export default function Dashboard({ onBack }) {
       const data = await response.json()
       setJobId(data.job_id)
 
-      // Start polling
       pollRef.current = setInterval(async () => {
         const statusRes = await fetch(`${API_URL}/api/videos/status/${data.job_id}`)
         const status = await statusRes.json()
@@ -469,7 +629,7 @@ export default function Dashboard({ onBack }) {
               borderRadius:16, padding:'56px 24px', textAlign:'center'
             }}>
               <div style={{ width:38, height:38, margin:'0 auto 14px', border:'3px solid rgba(255,255,255,.1)', borderTop:'3px solid #f97316', borderRadius:'50%', animation:'spin .8s linear infinite' }} />
-              <p style={{ color:'#6b7280', fontSize:14 }}>Processando sua música...</p>
+              <p style={{ color:'#6b7280', fontSize:14 }}>Processando sua música com IA...</p>
             </div>
           )}
 
