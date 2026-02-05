@@ -15,16 +15,76 @@ router = APIRouter()
 jobs_db = {}
 
 
+# 🆕 FEATURE 1: AUDIO TRIMMING HELPER
+# ────────────────────────────────────────────────────────────────
+def trim_audio_file(audio_path: str, duration: str) -> str:
+    """
+    Corta o áudio conforme a duração especificada
+    
+    Args:
+        audio_path: Caminho do arquivo de áudio original
+        duration: "10", "30", "60", "120", "full", ou número em segundos
+    
+    Returns:
+        Caminho do arquivo cortado (ou original se "full")
+    """
+    if duration == "full":
+        return audio_path
+    
+    try:
+        # Tentar importar pydub
+        try:
+            from pydub import AudioSegment
+        except ImportError:
+            print("⚠️ pydub not installed, cannot trim audio. Using full audio.")
+            return audio_path
+        
+        # Converter duration pra int
+        duration_seconds = int(duration)
+        
+        print(f"✂️ Trimming audio to {duration_seconds} seconds...")
+        
+        # Carregar áudio
+        audio = AudioSegment.from_file(audio_path)
+        
+        # Cortar (do início até duration_seconds)
+        trimmed = audio[:duration_seconds * 1000]  # pydub usa milliseconds
+        
+        # Salvar
+        trimmed_path = audio_path.replace('.wav', f'_trimmed_{duration_seconds}s.wav')
+        trimmed.export(trimmed_path, format='wav')
+        
+        print(f"✅ Audio trimmed successfully: {os.path.basename(trimmed_path)}")
+        return trimmed_path
+        
+    except Exception as e:
+        print(f"❌ Error trimming audio: {e}")
+        print(f"   Using full audio instead")
+        return audio_path
+
+
 @router.post("/generate")
 async def generate_video(
     audio: UploadFile = File(...),
     description: str = Form(""),
     style: str = Form("realistic"),
+    duration: str = Form("full"),             # 🆕 FEATURE 1
+    aspect_ratio: str = Form("16:9"),         # 🆕 FEATURE 2
+    resolution: str = Form("720p"),           # 🆕 FEATURE 3
+    ref_image: UploadFile = File(None),       # 🆕 FEATURE 5 (opcional)
     background_tasks: BackgroundTasks = None
 ):
     """
     Inicia geração de videoclipe
-    Retorna job_id para acompanhar progresso
+    
+    🆕 Novos parâmetros:
+        - duration: "10", "30", "60", "120", "full", ou número em segundos
+        - aspect_ratio: "16:9", "9:16", "1:1", "4:3"
+        - resolution: "720p", "1080p"
+        - ref_image: Imagem de referência (opcional)
+    
+    Returns:
+        job_id para acompanhar progresso
     """
     
     # Validate audio file
@@ -42,6 +102,19 @@ async def generate_video(
         content = await audio.read()
         f.write(content)
     
+    # 🆕 FEATURE 5: Save reference image if provided
+    ref_image_path = None
+    if ref_image:
+        print(f"🖼️ Reference image uploaded: {ref_image.filename}")
+        ref_image_filename = f"{job_id}_ref_{ref_image.filename}"
+        ref_image_path = os.path.join(UPLOAD_DIR, ref_image_filename)
+        
+        with open(ref_image_path, "wb") as f:
+            ref_content = await ref_image.read()
+            f.write(ref_content)
+        
+        print(f"✅ Reference image saved: {os.path.basename(ref_image_path)}")
+    
     # Initialize job
     jobs_db[job_id] = {
         "id": job_id,
@@ -52,6 +125,10 @@ async def generate_video(
         "audio_path": audio_path,
         "description": description,
         "style": style,
+        "duration": duration,              # 🆕
+        "aspect_ratio": aspect_ratio,      # 🆕
+        "resolution": resolution,          # 🆕
+        "ref_image_path": ref_image_path,  # 🆕
         "created_at": time.time()
     }
     
@@ -61,7 +138,14 @@ async def generate_video(
     return {
         "job_id": job_id,
         "status": "processing",
-        "message": "Video generation started"
+        "message": "Video generation started",
+        "config": {
+            "duration": duration,
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+            "style": style,
+            "has_reference_image": ref_image is not None
+        }
     }
 
 
@@ -88,14 +172,22 @@ async def get_job_status(job_id: str):
         "scenes": job.get("scenes"),
         "segments": job.get("segments"),
         "output_file": job.get("output_file"),
-        "error_message": job.get("error_message")
+        "error_message": job.get("error_message"),
+        # 🆕 Config usado
+        "config": {
+            "duration": job.get("duration"),
+            "aspect_ratio": job.get("aspect_ratio"),
+            "resolution": job.get("resolution"),
+            "style": job.get("style"),
+            "has_reference_image": job.get("ref_image_path") is not None
+        }
     }
 
 
 def process_video_pipeline(job_id: str):
     """
     Pipeline completo de geração cinematográfica
-    Roda em background
+    🆕 Com suporte a duration, aspect_ratio, resolution, ref_image
     """
     job = jobs_db[job_id]
     
@@ -104,11 +196,20 @@ def process_video_pipeline(job_id: str):
         update_job(job_id, status="processing", progress=5, current_step="plan")
         time.sleep(1)
         
+        # 🆕 FEATURE 1: TRIM AUDIO se necessário
+        original_audio_path = job["audio_path"]
+        audio_path = trim_audio_file(original_audio_path, job["duration"])
+        job["audio_path"] = audio_path  # Atualizar com o path cortado
+        
         # ─── STEP 2: INPUT ANALYZING ─────────────────────────
         update_job(job_id, progress=10, current_step="analyzing")
         
-        print(f"🎵 Analyzing audio: {job['audio_path']}")
-        audio_metadata = analyze_audio_cinematic(job["audio_path"])
+        print(f"🎵 Analyzing audio: {audio_path}")
+        print(f"   Duration preset: {job['duration']}")
+        print(f"   Aspect ratio: {job['aspect_ratio']}")
+        print(f"   Resolution: {job['resolution']}")
+        
+        audio_metadata = analyze_audio_cinematic(audio_path)
         
         job["audio_duration"] = audio_metadata["duration"]
         job["audio_bpm"] = audio_metadata["bpm"]
@@ -150,17 +251,25 @@ def process_video_pipeline(job_id: str):
         update_job(job_id, progress=58)
         time.sleep(2)
         
-        # ─── STEP 5: GENERATE SCENE IMAGES (STABILITY AI + R2) ─
+        # ─── STEP 5: GENERATE SCENE IMAGES ────────────────────
         update_job(job_id, progress=60, current_step="scenes")
         
         print(f"🎨 Generating {len(creative_concept['scenes'])} scene images with Stability AI...")
+        print(f"   Style: {job['style']}")
+        print(f"   Aspect ratio: {job['aspect_ratio']}")  # 🆕
+        print(f"   Resolution: {job['resolution']}")      # 🆕
+        if job.get('ref_image_path'):
+            print(f"   Reference image: {os.path.basename(job['ref_image_path'])}")  # 🆕
         print(f"📤 Uploading to CloudFlare R2...")
         
-        # Gerar imagens com Stability AI e upload pro R2
+        # 🆕 Passar todos os novos parâmetros
         scenes_with_images = generate_scenes_batch(
             creative_concept["scenes"],
             style=job["style"],
-            job_id=job_id  # ← Passa o job_id pro R2 organizar
+            aspect_ratio=job["aspect_ratio"],      # 🆕
+            resolution=job["resolution"],          # 🆕
+            reference_image_path=job.get("ref_image_path"),  # 🆕
+            job_id=job_id
         )
         
         job["scenes"] = scenes_with_images
@@ -178,10 +287,8 @@ def process_video_pipeline(job_id: str):
         # ─── STEP 6: VIDEO SEGMENTS ───────────────────────────
         update_job(job_id, progress=85, current_step="segments")
         
-        # Group scenes into segments
         segments = scene_structure["segments"]
         
-        # Adicionar info de quais scenes têm imagem
         for segment in segments:
             segment["scenes_with_images"] = [
                 s for s in scenes_with_images 
@@ -196,7 +303,6 @@ def process_video_pipeline(job_id: str):
         # ─── STEP 7: MERGE FINAL ──────────────────────────────
         update_job(job_id, progress=98, current_step="merge")
         
-        # Mock final video (em produção, faria merge com ffmpeg)
         job["output_file"] = f"/api/files/{job_id}_final.mp4"
         
         time.sleep(1)
@@ -213,6 +319,7 @@ def process_video_pipeline(job_id: str):
         print(f"   Generated {len(scenes_with_images)} scenes across {len(segments)} segments")
         print(f"   Successfully generated: {scenes_generated}/{len(scenes_with_images)} images")
         print(f"   ☁️ All images stored permanently in CloudFlare R2")
+        print(f"   Config: {job['aspect_ratio']}, {job['resolution']}, {job['style']}")
         
     except Exception as e:
         print(f"❌ Error processing job {job_id}: {e}")
