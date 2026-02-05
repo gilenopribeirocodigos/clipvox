@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 // ─── API CONFIG ───────────────────────────────────────────────
 const API_URL = 'https://clipvox-backend.onrender.com'
@@ -15,6 +15,12 @@ const CSS = `
   @keyframes pulse  { 0%,100%{opacity:.45} 50%{opacity:1} }
   @keyframes spin   { to{transform:rotate(360deg)} }
   @keyframes fadeUp { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes shimmer { 0%{background-position:-1000px 0} 100%{background-position:1000px 0} }
+  .skeleton {
+    background: linear-gradient(90deg, rgba(255,255,255,.03) 25%, rgba(255,255,255,.08) 50%, rgba(255,255,255,.03) 75%);
+    background-size: 1000px 100%;
+    animation: shimmer 2s infinite;
+  }
 `
 
 // ─── LOGO ─────────────────────────────────────────────────────
@@ -230,6 +236,68 @@ function LeftPanel({ fileName, jobStatus, onReset }) {
   )
 }
 
+// ─── SCENE IMAGE COMPONENT ────────────────────────────────────
+function SceneImage({ scene, index }) {
+  const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState(false)
+
+  return (
+    <div
+      style={{
+        background:'rgba(255,255,255,.03)', border:'1px solid rgba(255,255,255,.06)',
+        borderRadius:11, overflow:'hidden', cursor:'pointer', transition:'all .25s',
+        animation:`fadeUp .4s ease ${index*0.04}s both`,
+        position:'relative'
+      }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor='rgba(249,115,22,.3)'; e.currentTarget.style.transform='translateY(-2px)' }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor='rgba(255,255,255,.06)'; e.currentTarget.style.transform='translateY(0)' }}
+    >
+      <div style={{ height:82, position:'relative', background:'#0a0a0e' }}>
+        {!loaded && !error && (
+          <div className="skeleton" style={{ width:'100%', height:'100%', position:'absolute', top:0, left:0 }} />
+        )}
+        
+        {scene.image_url && !error ? (
+          <img 
+            src={scene.image_url}
+            alt={`Scene ${scene.scene_number}`}
+            onLoad={() => setLoaded(true)}
+            onError={() => setError(true)}
+            style={{ 
+              width:'100%', 
+              height:'100%', 
+              objectFit:'cover',
+              opacity: loaded ? 1 : 0,
+              transition:'opacity .3s'
+            }}
+          />
+        ) : (
+          <div style={{
+            width:'100%', height:'100%',
+            background:`linear-gradient(135deg, rgba(${80+index*10},${40+index*5},${20+index*8},1), rgba(10,10,14,1))`,
+            display:'flex', alignItems:'center', justifyContent:'center', fontSize:24
+          }}>
+            {scene.mood?.includes('energ') ? '⚡' : scene.mood?.includes('calm') || scene.mood?.includes('sereno') ? '🌙' : '🎬'}
+          </div>
+        )}
+        
+        <div style={{ position:'absolute', bottom:5, left:5, background:'rgba(0,0,0,.7)', borderRadius:4, padding:'2px 5px', fontSize:9, color:'#fff' }}>
+          Scene {scene.scene_number}
+        </div>
+      </div>
+      
+      <div style={{ padding:'8px 9px' }}>
+        <div style={{ fontSize:10, color:'#fff', fontWeight:500, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+          {scene.camera_movement}
+        </div>
+        <div style={{ fontSize:9, color:'#4b5563', marginTop:1 }}>
+          {scene.duration_seconds}s · {scene.mood}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── CANVAS SECTIONS ──────────────────────────────────────────
 function CreativeConceptCard({ concept }) {
   if (!concept) return null
@@ -273,6 +341,9 @@ function CreativeConceptCard({ concept }) {
 function ScenesGrid({ scenes }) {
   if (!scenes || scenes.length === 0) return null
   
+  const [showAll, setShowAll] = useState(false)
+  const displayScenes = showAll ? scenes : scenes.slice(0, 12)
+  
   return (
     <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:24, animation:'fadeUp .45s ease' }}>
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:16 }}>
@@ -280,36 +351,24 @@ function ScenesGrid({ scenes }) {
           <span style={{ fontSize:18 }}>🎬</span>
           <span style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:15, letterSpacing:2, color:'#fff' }}>SCENES ({scenes.length})</span>
         </div>
-      </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(120px,1fr))', gap:10 }}>
-        {scenes.slice(0, 12).map((sc, i) => (
-          <div key={i} style={{
-            background:'rgba(255,255,255,.03)', border:'1px solid rgba(255,255,255,.06)',
-            borderRadius:11, overflow:'hidden', cursor:'pointer', transition:'all .25s',
-            animation:`fadeUp .4s ease ${i*0.06}s both`
-          }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor='rgba(249,115,22,.3)'; e.currentTarget.style.transform='translateY(-2px)' }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor='rgba(255,255,255,.06)'; e.currentTarget.style.transform='translateY(0)' }}
+        {scenes.length > 12 && (
+          <button 
+            onClick={() => setShowAll(!showAll)}
+            style={{
+              background:'rgba(249,115,22,.1)', border:'1px solid rgba(249,115,22,.3)',
+              borderRadius:8, padding:'6px 12px', color:'#f97316', fontSize:12, cursor:'pointer'
+            }}
           >
-            <div style={{
-              height:82,
-              background:`linear-gradient(135deg, rgba(${80+i*10},${40+i*5},${20+i*8},1), rgba(10,10,14,1))`,
-              display:'flex', alignItems:'center', justifyContent:'center', fontSize:24,
-              position:'relative'
-            }}>
-              {sc.mood?.includes('energ') ? '⚡' : sc.mood?.includes('calm') || sc.mood?.includes('sereno') ? '🌙' : '🎬'}
-              <div style={{ position:'absolute', bottom:5, left:5, background:'rgba(0,0,0,.6)', borderRadius:4, padding:'2px 5px', fontSize:9, color:'#fff' }}>Scene {sc.scene_number}</div>
-            </div>
-            <div style={{ padding:'8px 9px' }}>
-              <div style={{ fontSize:10, color:'#fff', fontWeight:500, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{sc.camera_movement}</div>
-              <div style={{ fontSize:9, color:'#4b5563', marginTop:1 }}>{sc.duration_seconds}s · {sc.mood}</div>
-            </div>
-          </div>
+            {showAll ? 'Mostrar Menos' : `Ver Todas (${scenes.length})`}
+          </button>
+        )}
+      </div>
+      
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(120px,1fr))', gap:10 }}>
+        {displayScenes.map((sc, i) => (
+          <SceneImage key={sc.scene_number} scene={sc} index={i} />
         ))}
       </div>
-      {scenes.length > 12 && (
-        <div style={{ marginTop:16, textAlign:'center', color:'#6b7280', fontSize:13 }}>+ {scenes.length - 12} cenas adicionais</div>
-      )}
     </div>
   )
 }
@@ -427,7 +486,7 @@ export default function Dashboard({ onBack }) {
               <div style={{ fontSize:46, marginBottom:14 }}>🎬</div>
               <h3 style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:24, letterSpacing:2, color:'#fff', marginBottom:6 }}>VIDEOCLIPE PRONTO!</h3>
               <p style={{ color:'#6b7280', fontSize:14, marginBottom:24 }}>
-                Gerado com {jobStatus.scenes?.length || 0} cenas cinematográficas sincronizadas!
+                Gerado com {jobStatus.scenes?.length || 0} cenas cinematográficas com IA!
               </p>
               <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap' }}>
                 <button style={{
