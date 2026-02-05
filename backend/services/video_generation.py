@@ -1,51 +1,142 @@
 """
-Serviço de geração de vídeo com Stability AI + CloudFlare R2
-🆕 Suporta: aspect ratio, resolution, reference image
+🎬 ClipVox - Video Generation Service (Image Generation)
+──────────────────────────────────────────────────────────────
+Gera imagens cinematográficas usando Stability AI (SD3.5)
+E faz upload pro CloudFlare R2 para armazenamento permanente
+
+🆕 FEATURES:
+- ✅ FEATURE 2: Aspect Ratio (16:9, 9:16, 1:1, 4:3)
+- ✅ FEATURE 3: Resolution (720p, 1080p)
+- ✅ FEATURE 4: Visual Styles (10+ estilos)
+- ✅ FEATURE 5: Reference Image (image-to-image)
+- ✅ FIX: Redimensiona ref image antes de enviar pra API
 """
-import requests
+
 import os
 import base64
-import boto3
-from botocore.client import Config
+import requests
+from typing import Optional
+from PIL import Image  # 🆕 Para redimensionar imagem de referência
+import io
+
 from config import (
     STABILITY_API_KEY, 
-    UPLOAD_DIR,
-    R2_ACCESS_KEY_ID,
-    R2_SECRET_ACCESS_KEY,
-    R2_ENDPOINT_URL,
+    UPLOAD_DIR, 
+    VISUAL_STYLES,  # 🆕 FEATURE 4
     R2_BUCKET_NAME,
     R2_PUBLIC_URL,
-    VISUAL_STYLES  # 🆕 Estilos expandidos
+    get_r2_client
 )
 
 
-# ─── Inicializar Cliente R2 ───────────────────────────────────
-def get_r2_client():
-    """Retorna cliente boto3 configurado para CloudFlare R2"""
-    if not all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL]):
-        print("⚠️ R2 credentials not configured")
-        return None
-    
-    return boto3.client(
-        's3',
-        endpoint_url=R2_ENDPOINT_URL,
-        aws_access_key_id=R2_ACCESS_KEY_ID,
-        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-        config=Config(signature_version='s3v4'),
-        region_name='auto'
-    )
+# ═══════════════════════════════════════════════════════════════════
+# 🆕 ASPECT RATIO DIMENSIONS
+# ═══════════════════════════════════════════════════════════════════
+ASPECT_RATIO_DIMENSIONS = {
+    "16:9": {
+        "720p": (1280, 720),
+        "1080p": (1920, 1080)
+    },
+    "9:16": {
+        "720p": (720, 1280),
+        "1080p": (1080, 1920)
+    },
+    "1:1": {
+        "720p": (1024, 1024),
+        "1080p": (1536, 1536)
+    },
+    "4:3": {
+        "720p": (1024, 768),
+        "1080p": (1536, 1152)
+    }
+}
 
 
-def upload_to_r2(local_path: str, r2_key: str) -> str:
+# ═══════════════════════════════════════════════════════════════════
+# 🆕 FIX: RESIZE REFERENCE IMAGE TO ASPECT RATIO
+# ═══════════════════════════════════════════════════════════════════
+def resize_image_to_aspect_ratio(
+    image_path: str,
+    aspect_ratio: str = "16:9",
+    resolution: str = "720p"
+) -> str:
     """
-    Faz upload de arquivo local pro R2
+    🔧 FIX CRÍTICO: Redimensiona imagem de referência para o aspect ratio desejado
+    
+    Stability AI image-to-image NÃO permite especificar aspect_ratio no payload.
+    O aspect ratio é HERDADO da imagem enviada.
+    
+    Solução: Redimensionar a imagem ANTES de enviar para a API.
+    
+    Args:
+        image_path: Caminho da imagem original
+        aspect_ratio: Proporção desejada (16:9, 9:16, 1:1, 4:3)
+        resolution: Qualidade (720p, 1080p)
+    
+    Returns:
+        str: Caminho da imagem redimensionada
+    """
+    try:
+        # Obter dimensões target
+        target_width, target_height = ASPECT_RATIO_DIMENSIONS[aspect_ratio][resolution]
+        
+        # Abrir imagem original
+        img = Image.open(image_path)
+        original_width, original_height = img.size
+        
+        print(f"🖼️ Resizing reference image:")
+        print(f"   Original: {original_width}x{original_height}")
+        print(f"   Target: {target_width}x{target_height} ({aspect_ratio}, {resolution})")
+        
+        # ─── Calcular crop para manter aspect ratio ───────────────
+        # Calcula qual dimensão deve ser cropada
+        target_aspect = target_width / target_height
+        original_aspect = original_width / original_height
+        
+        if original_aspect > target_aspect:
+            # Imagem é mais larga, crop nas laterais
+            new_width = int(original_height * target_aspect)
+            left = (original_width - new_width) // 2
+            img = img.crop((left, 0, left + new_width, original_height))
+        else:
+            # Imagem é mais alta, crop em cima/baixo
+            new_height = int(original_width / target_aspect)
+            top = (original_height - new_height) // 2
+            img = img.crop((0, top, original_width, top + new_height))
+        
+        # ─── Resize para dimensões target ─────────────────────────
+        img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        
+        # ─── Salvar imagem redimensionada ─────────────────────────
+        resized_path = image_path.replace(".jpeg", f"_resized_{aspect_ratio.replace(':', 'x')}_{resolution}.jpeg")
+        resized_path = resized_path.replace(".jpg", f"_resized_{aspect_ratio.replace(':', 'x')}_{resolution}.jpg")
+        resized_path = resized_path.replace(".png", f"_resized_{aspect_ratio.replace(':', 'x')}_{resolution}.png")
+        
+        img.save(resized_path, quality=95, optimize=True)
+        
+        print(f"✅ Resized image saved: {os.path.basename(resized_path)}")
+        
+        return resized_path
+        
+    except Exception as e:
+        print(f"⚠️ Error resizing image: {e}")
+        print(f"   Using original image instead")
+        return image_path
+
+
+# ═══════════════════════════════════════════════════════════════════
+# CLOUDFLARE R2 UPLOAD
+# ═══════════════════════════════════════════════════════════════════
+def upload_to_r2(local_path: str, r2_key: str) -> Optional[str]:
+    """
+    Faz upload de um arquivo local pro CloudFlare R2
     
     Args:
         local_path: Caminho do arquivo local
-        r2_key: Key (caminho) no R2 (ex: "scenes/scene_001.jpg")
+        r2_key: Key no bucket R2 (ex: "jobs/abc123/scene_001.jpg")
     
     Returns:
-        URL pública do arquivo no R2
+        URL público do arquivo no R2, ou None se falhar
     """
     try:
         r2_client = get_r2_client()
@@ -74,6 +165,9 @@ def upload_to_r2(local_path: str, r2_key: str) -> str:
         return None
 
 
+# ═══════════════════════════════════════════════════════════════════
+# GENERATE SCENE IMAGE (STABILITY AI + R2)
+# ═══════════════════════════════════════════════════════════════════
 def generate_scene_image(
     prompt: str, 
     scene_number: int, 
@@ -114,25 +208,41 @@ def generate_scene_image(
         
         enriched_prompt = f"{style_prefix}, {prompt}"
         
-        # 🆕 FEATURE 2 & 3: Aspect Ratio e Resolution
+        # ─── Base Payload ──────────────────────────────────────
         payload = {
             "prompt": enriched_prompt,
-            "aspect_ratio": aspect_ratio,  # "16:9", "9:16", "1:1", "4:3"
             "output_format": "jpeg",
             "model": "sd3.5-large",
         }
         
-        # 🆕 FEATURE 5: Se tem imagem de referência, usa image-to-image
+        # 🆕 FEATURE 5: Se tem imagem de referência, redimensiona e usa image-to-image
         files = {"none": ''}
         mode = "text-to-image"
         
         if reference_image_path and os.path.exists(reference_image_path):
             print(f"🖼️ Using reference image for scene {scene_number}")
-            with open(reference_image_path, 'rb') as f:
+            
+            # 🔧 FIX CRÍTICO: Redimensionar imagem ANTES de enviar
+            resized_image_path = resize_image_to_aspect_ratio(
+                reference_image_path,
+                aspect_ratio,
+                resolution
+            )
+            
+            # Ler imagem redimensionada
+            with open(resized_image_path, 'rb') as f:
                 files = {"image": f.read()}
+            
             mode = "image-to-image"
             payload["mode"] = "image-to-image"
             payload["strength"] = 0.7  # 0-1, quanto mais alto mais difere da original
+            
+            # ❌ NÃO enviar aspect_ratio quando mode = image-to-image
+            # A Stability AI usa o aspect ratio da imagem enviada
+            
+        else:
+            # ✅ SÓ envia aspect_ratio quando NÃO tem reference image
+            payload["aspect_ratio"] = aspect_ratio  # "16:9", "9:16", "1:1", "4:3"
         
         headers = {
             "Authorization": f"Bearer {STABILITY_API_KEY}",
@@ -143,6 +253,9 @@ def generate_scene_image(
         print(f"🎨 Generating scene {scene_number} [{aspect_ratio}, {resolution}, {style}]")
         if reference_image_path:
             print(f"   With reference image: {os.path.basename(reference_image_path)}")
+            print(f"   Mode: image-to-image (aspect_ratio inherited from image)")
+        else:
+            print(f"   Mode: text-to-image (aspect_ratio in payload)")
         
         # Prepare files for request
         request_files = {"none": ''} if mode == "text-to-image" else {"image": files["image"]}
@@ -198,91 +311,90 @@ def generate_scene_image(
     
     except Exception as e:
         print(f"❌ Error generating scene {scene_number}: {e}")
-        import traceback
-        traceback.print_exc()
         return _generate_placeholder_image(scene_number, prompt)
 
 
+# ═══════════════════════════════════════════════════════════════════
+# PLACEHOLDER IMAGE (quando API falha)
+# ═══════════════════════════════════════════════════════════════════
+def _generate_placeholder_image(scene_number: int, prompt: str) -> dict:
+    """Gera uma imagem placeholder quando a API falha"""
+    
+    placeholder_text = f"Scene {scene_number}\n{prompt[:50]}..."
+    
+    # Criar imagem simples com PIL
+    img = Image.new('RGB', (1280, 720), color=(40, 40, 50))
+    
+    filename = f"scene_{scene_number:03d}_placeholder.jpg"
+    local_path = os.path.join(UPLOAD_DIR, filename)
+    img.save(local_path)
+    
+    return {
+        "success": False,
+        "image_path": local_path,
+        "image_url": f"/api/files/{filename}",
+        "r2_url": None,
+        "prompt_used": prompt[:100],
+        "mode": "placeholder",
+        "aspect_ratio": "16:9",
+        "resolution": "720p"
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GENERATE SCENES BATCH (processa múltiplas scenes)
+# ═══════════════════════════════════════════════════════════════════
 def generate_scenes_batch(
-    scenes: list, 
+    scenes: list,
     style: str = "realistic",
-    aspect_ratio: str = "16:9",       # 🆕
-    resolution: str = "720p",         # 🆕
-    reference_image_path: str = None, # 🆕
+    aspect_ratio: str = "16:9",       # 🆕 FEATURE 2
+    resolution: str = "720p",         # 🆕 FEATURE 3
+    reference_image_path: str = None, # 🆕 FEATURE 5
     job_id: str = ""
 ) -> list:
     """
-    Gera múltiplas scenes em batch
+    Gera imagens para múltiplas scenes em batch
     
-    🆕 Args:
-        scenes: Lista de objetos scene com 'scene_number' e 'prompt'
+    Args:
+        scenes: Lista de scenes [{scene_number, prompt, ...}]
         style: Estilo visual
-        aspect_ratio: Proporção (16:9, 9:16, 1:1, 4:3)
-        resolution: Qualidade (720p, 1080p)
-        reference_image_path: Imagem de referência (opcional)
+        aspect_ratio: Proporção da imagem
+        resolution: Qualidade
+        reference_image_path: Caminho da imagem de referência
         job_id: ID do job
     
     Returns:
-        Lista de scenes com campo 'image_url' adicionado
+        Lista de dicts com resultados de cada scene
     """
+    
     results = []
+    successful_count = 0
+    
+    print(f"🎨 Generating {len(scenes)} scene images with Stability AI...")
+    print(f"   Style: {style}")
+    print(f"   Aspect Ratio: {aspect_ratio}")
+    print(f"   Resolution: {resolution}")
+    if reference_image_path:
+        print(f"   Reference Image: {os.path.basename(reference_image_path)}")
+    
+    print("📤 Uploading to CloudFlare R2...")
     
     for scene in scenes:
         result = generate_scene_image(
             prompt=scene["prompt"],
             scene_number=scene["scene_number"],
             style=style,
-            aspect_ratio=aspect_ratio,      # 🆕
-            resolution=resolution,          # 🆕
-            reference_image_path=reference_image_path,  # 🆕
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
+            reference_image_path=reference_image_path,
             job_id=job_id
         )
         
-        # Adicionar URL da imagem ao objeto scene
-        scene["image_url"] = result["image_url"]
-        scene["r2_url"] = result.get("r2_url")
-        scene["image_generated"] = result["success"]
-        scene["aspect_ratio"] = result.get("aspect_ratio")  # 🆕
-        scene["resolution"] = result.get("resolution")      # 🆕
+        if result["success"]:
+            successful_count += 1
         
-        results.append(scene)
+        results.append(result)
+    
+    print(f"✅ Generated {successful_count}/{len(scenes)} scenes successfully")
     
     return results
-
-
-def _generate_placeholder_image(scene_number: int, prompt: str) -> dict:
-    """
-    Gera imagem placeholder quando Stability AI não disponível
-    """
-    try:
-        from PIL import Image, ImageDraw
-        
-        # Criar imagem 1280x720 (16:9)
-        img = Image.new('RGB', (1280, 720), color=(30 + scene_number * 5, 20 + scene_number * 3, 40 + scene_number * 4))
-        draw = ImageDraw.Draw(img)
-        
-        # Adicionar texto
-        text = f"Scene {scene_number}\n{prompt[:50]}..."
-        draw.text((50, 300), text, fill=(255, 255, 255))
-        
-        # Salvar
-        filename = f"scene_{scene_number:03d}_placeholder.jpg"
-        filepath = os.path.join(UPLOAD_DIR, filename)
-        img.save(filepath, 'JPEG')
-        
-        return {
-            "success": False,
-            "image_path": filepath,
-            "image_url": f"/api/files/{filename}",
-            "r2_url": None,
-            "note": "Placeholder image (Stability AI not configured)"
-        }
-        
-    except ImportError:
-        return {
-            "success": False,
-            "image_path": None,
-            "image_url": f"/api/files/mock_scene_{scene_number}.jpg",
-            "r2_url": None,
-            "note": "Mock URL (PIL not installed)"
-        }
