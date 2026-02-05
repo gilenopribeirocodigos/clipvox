@@ -296,6 +296,7 @@ def generate_scene_image(
         
         return {
             "success": True,
+            "scene_number": scene_number,  # 🔧 FIX: Incluir scene_number
             "image_path": local_path,
             "image_url": r2_url or f"/api/files/{filename}",
             "r2_url": r2_url,
@@ -331,6 +332,7 @@ def _generate_placeholder_image(scene_number: int, prompt: str) -> dict:
     
     return {
         "success": False,
+        "scene_number": scene_number,  # 🔧 FIX: Incluir scene_number
         "image_path": local_path,
         "image_url": f"/api/files/{filename}",
         "r2_url": None,
