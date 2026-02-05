@@ -1,24 +1,91 @@
 """
-Serviço de geração de vídeo com Stability AI
-Gera imagens a partir dos prompts das scenes
+Serviço de geração de vídeo com Stability AI + CloudFlare R2
+Gera imagens e faz upload direto pro R2
 """
 import requests
 import os
 import base64
-from config import STABILITY_API_KEY, UPLOAD_DIR
+import boto3
+from botocore.client import Config
+from config import (
+    STABILITY_API_KEY, 
+    UPLOAD_DIR,
+    R2_ACCESS_KEY_ID,
+    R2_SECRET_ACCESS_KEY,
+    R2_ENDPOINT_URL,
+    R2_BUCKET_NAME,
+    R2_PUBLIC_URL
+)
 
 
-def generate_scene_image(prompt: str, scene_number: int, style: str = "realistic") -> dict:
+# ─── Inicializar Cliente R2 ───────────────────────────────────
+def get_r2_client():
+    """Retorna cliente boto3 configurado para CloudFlare R2"""
+    if not all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL]):
+        print("⚠️ R2 credentials not configured")
+        return None
+    
+    return boto3.client(
+        's3',
+        endpoint_url=R2_ENDPOINT_URL,
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+        config=Config(signature_version='s3v4'),
+        region_name='auto'  # R2 usa 'auto'
+    )
+
+
+def upload_to_r2(local_path: str, r2_key: str) -> str:
+    """
+    Faz upload de arquivo local pro R2
+    
+    Args:
+        local_path: Caminho do arquivo local
+        r2_key: Key (caminho) no R2 (ex: "scenes/scene_001.jpg")
+    
+    Returns:
+        URL pública do arquivo no R2
+    """
+    try:
+        r2_client = get_r2_client()
+        
+        if not r2_client:
+            print("⚠️ R2 client not available, skipping upload")
+            return None
+        
+        # Upload do arquivo
+        with open(local_path, 'rb') as f:
+            r2_client.put_object(
+                Bucket=R2_BUCKET_NAME,
+                Key=r2_key,
+                Body=f,
+                ContentType='image/jpeg'
+            )
+        
+        # Construir URL pública
+        public_url = f"{R2_PUBLIC_URL}/{r2_key}"
+        
+        print(f"✅ Uploaded to R2: {public_url}")
+        return public_url
+        
+    except Exception as e:
+        print(f"❌ Error uploading to R2: {e}")
+        return None
+
+
+def generate_scene_image(prompt: str, scene_number: int, style: str = "realistic", job_id: str = "") -> dict:
     """
     Gera uma imagem para uma scene usando Stability AI
+    E faz upload pro CloudFlare R2
     
     Args:
         prompt: Prompt em inglês descrevendo a cena
         scene_number: Número da scene (pra salvar o arquivo)
         style: Estilo visual (realistic, cinematic, animated, retro)
+        job_id: ID do job (pra organizar no R2)
     
     Returns:
-        dict com: success, image_path, image_url
+        dict com: success, image_path, image_url, r2_url
     """
     
     if not STABILITY_API_KEY:
@@ -27,7 +94,6 @@ def generate_scene_image(prompt: str, scene_number: int, style: str = "realistic
     
     try:
         # ─── Stability AI API Config ──────────────────────────
-        # Usando Stable Diffusion 3.5 (melhor custo-benefício)
         url = "https://api.stability.ai/v2beta/stable-image/generate/sd3"
         
         # Style-specific prefixes
@@ -38,16 +104,13 @@ def generate_scene_image(prompt: str, scene_number: int, style: str = "realistic
             "retro": "retro 1980s aesthetic, VHS style, synthwave colors, vintage film grain, neon lights, nostalgic"
         }
         
-        # Enriquecer o prompt com o style
         enriched_prompt = f"{style_prefixes.get(style, style_prefixes['realistic'])}, {prompt}"
         
-        # Aspect ratio 16:9 (ideal pra vídeo)
-        # Output format: jpeg (mais rápido que png)
         payload = {
             "prompt": enriched_prompt,
             "aspect_ratio": "16:9",
             "output_format": "jpeg",
-            "model": "sd3.5-large",  # Melhor modelo atual
+            "model": "sd3.5-large",
             "mode": "text-to-image"
         }
         
@@ -64,37 +127,41 @@ def generate_scene_image(prompt: str, scene_number: int, style: str = "realistic
             headers=headers,
             files={"none": ''},
             data=payload,
-            timeout=60  # 60s timeout
+            timeout=60
         )
         
         if response.status_code != 200:
             print(f"❌ Stability AI error: {response.status_code} - {response.text}")
             return _generate_placeholder_image(scene_number, prompt)
         
-        # ─── Salvar Imagem ────────────────────────────────────
+        # ─── Salvar Localmente (Temporário) ───────────────────
         data = response.json()
         
-        # A API retorna base64 da imagem
         if "image" in data:
             image_data = base64.b64decode(data["image"])
         else:
             print(f"❌ No image in response: {data}")
             return _generate_placeholder_image(scene_number, prompt)
         
-        # Salvar arquivo
+        # Salvar temporariamente
         filename = f"scene_{scene_number:03d}.jpg"
-        filepath = os.path.join(UPLOAD_DIR, filename)
+        local_path = os.path.join(UPLOAD_DIR, filename)
         
-        with open(filepath, "wb") as f:
+        with open(local_path, "wb") as f:
             f.write(image_data)
         
-        print(f"✅ Scene {scene_number} generated: {filepath}")
+        # ─── Upload pro R2 ────────────────────────────────────
+        r2_key = f"jobs/{job_id}/{filename}" if job_id else f"scenes/{filename}"
+        r2_url = upload_to_r2(local_path, r2_key)
+        
+        print(f"✅ Scene {scene_number} generated and uploaded")
         
         return {
             "success": True,
-            "image_path": filepath,
-            "image_url": f"/api/files/{filename}",
-            "prompt_used": enriched_prompt[:100]  # primeiros 100 chars
+            "image_path": local_path,
+            "image_url": r2_url or f"/api/files/{filename}",  # Fallback
+            "r2_url": r2_url,
+            "prompt_used": enriched_prompt[:100]
         }
         
     except requests.exceptions.Timeout:
@@ -103,34 +170,36 @@ def generate_scene_image(prompt: str, scene_number: int, style: str = "realistic
     
     except Exception as e:
         print(f"❌ Error generating scene {scene_number}: {e}")
+        import traceback
+        traceback.print_exc()
         return _generate_placeholder_image(scene_number, prompt)
 
 
-def generate_scenes_batch(scenes: list, style: str = "realistic", max_parallel: int = 3) -> list:
+def generate_scenes_batch(scenes: list, style: str = "realistic", job_id: str = "") -> list:
     """
     Gera múltiplas scenes em batch
     
     Args:
         scenes: Lista de objetos scene com 'scene_number' e 'prompt'
         style: Estilo visual
-        max_parallel: Quantas gerar em paralelo (cuidado com rate limits!)
+        job_id: ID do job
     
     Returns:
         Lista de scenes com campo 'image_url' adicionado
     """
     results = []
     
-    # Por enquanto, sequencial (pra não estourar rate limit)
-    # Depois pode usar ThreadPoolExecutor pra paralelizar
     for scene in scenes:
         result = generate_scene_image(
             prompt=scene["prompt"],
             scene_number=scene["scene_number"],
-            style=style
+            style=style,
+            job_id=job_id
         )
         
         # Adicionar URL da imagem ao objeto scene
         scene["image_url"] = result["image_url"]
+        scene["r2_url"] = result.get("r2_url")
         scene["image_generated"] = result["success"]
         
         results.append(scene)
@@ -141,10 +210,9 @@ def generate_scenes_batch(scenes: list, style: str = "realistic", max_parallel: 
 def _generate_placeholder_image(scene_number: int, prompt: str) -> dict:
     """
     Gera imagem placeholder quando Stability AI não disponível
-    Usa PIL para criar uma imagem colorida simples
     """
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw
         
         # Criar imagem 1280x720 (16:9)
         img = Image.new('RGB', (1280, 720), color=(30 + scene_number * 5, 20 + scene_number * 3, 40 + scene_number * 4))
@@ -163,31 +231,15 @@ def _generate_placeholder_image(scene_number: int, prompt: str) -> dict:
             "success": False,
             "image_path": filepath,
             "image_url": f"/api/files/{filename}",
+            "r2_url": None,
             "note": "Placeholder image (Stability AI not configured)"
         }
         
     except ImportError:
-        # Se PIL não tiver instalado, retorna só URL mock
         return {
             "success": False,
             "image_path": None,
             "image_url": f"/api/files/mock_scene_{scene_number}.jpg",
+            "r2_url": None,
             "note": "Mock URL (PIL not installed)"
         }
-
-
-# ─── Custos Estimados ────────────────────────────────────────
-"""
-Stability AI SD3.5 Large Pricing (Janeiro 2025):
-- Text-to-Image: $0.065 por imagem (1024x1024)
-- Aspect ratio 16:9: mesmo preço
-
-Exemplo de custos:
-- 30 scenes = 30 images = $1.95
-- 60 scenes = 60 images = $3.90
-- 100 scenes = 100 images = $6.50
-
-Rate Limits:
-- 150 requests/minuto no plano básico
-- Recomendado: gerar em batch de 10-20 por vez
-"""
