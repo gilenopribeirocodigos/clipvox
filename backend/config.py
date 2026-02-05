@@ -56,3 +56,72 @@ CAMERA_MOVEMENTS = [
 ]
 
 TRANSITIONS = ["cut", "dissolve", "fade", "wipe"]
+
+# 🆕 FEATURE 4: ESTILOS EXPANDIDOS (10+ estilos)
+# ────────────────────────────────────────────────────────────────
+VISUAL_STYLES = {
+    "realistic": {
+        "prefix": "photorealistic, cinematic photography, 8K HDR, professional camera, film grain, natural lighting, high detail",
+        "label": "Fotorrealista"
+    },
+    "cinematic": {
+        "prefix": "cinematic masterpiece, anamorphic lens, epic composition, dramatic lighting, color grading, film still, Blade Runner aesthetic",
+        "label": "Cinemático"
+    },
+    "animated": {
+        "prefix": "3D animation style, Pixar quality, vibrant colors, expressive, detailed render, studio ghibli influence",
+        "label": "Animado 3D"
+    },
+    "retro": {
+        "prefix": "retro 1980s aesthetic, VHS style, synthwave colors, vintage film grain, neon lights, nostalgic",
+        "label": "Retro 80s"
+    },
+    "anime": {
+        "prefix": "anime style, Studio Ghibli aesthetic, vibrant colors, hand-drawn animation, Japanese animation, detailed character design, expressive faces",
+        "label": "Anime"
+    },
+    "cyberpunk": {
+        "prefix": "cyberpunk aesthetic, neon lights, futuristic cityscape, Blade Runner 2049 style, rain-soaked streets, holographic displays, dystopian atmosphere, high-tech low-life",
+        "label": "Cyberpunk"
+    },
+    "fantasy": {
+        "prefix": "fantasy art, magical atmosphere, ethereal lighting, concept art style, epic fantasy composition, mystical elements, enchanted forest, mythical creatures",
+        "label": "Fantasia"
+    },
+    "minimalist": {
+        "prefix": "minimalist design, clean composition, negative space, geometric shapes, modern aesthetic, simple color palette, elegant simplicity",
+        "label": "Minimalista"
+    },
+    "vintage": {
+        "prefix": "vintage film photography, classic cinema aesthetic, warm sepia tones, film scratches, old Hollywood glamour, timeless elegance, nostalgic atmosphere",
+        "label": "Vintage"
+    },
+    "oil_painting": {
+        "prefix": "oil painting style, renaissance art, brushstroke texture, classical art technique, rich colors, fine art painting, museum quality, detailed brushwork",
+        "label": "Pintura a Óleo"
+    }
+}
+
+# 🆕 FEATURE 2: ASPECT RATIOS SUPORTADOS
+# ────────────────────────────────────────────────────────────────
+ASPECT_RATIOS = {
+    "16:9": {"label": "Horizontal", "desc": "1920×1080"},
+    "9:16": {"label": "Vertical (Stories)", "desc": "1080×1920"},
+    "1:1": {"label": "Quadrado (Instagram)", "desc": "1080×1080"},
+    "4:3": {"label": "Clássico", "desc": "1440×1080"}
+}
+
+# 🆕 FEATURE 3: RESOLUÇÕES SUPORTADAS
+# ────────────────────────────────────────────────────────────────
+RESOLUTIONS = {
+    "720p": {
+        "label": "HD 720p",
+        "desc": "Rápido e econômico",
+        "cost_multiplier": 1.0  # Base cost
+    },
+    "1080p": {
+        "label": "Full HD 1080p",
+        "desc": "Qualidade premium",
+        "cost_multiplier": 1.54  # ~54% mais caro
+    }
+}
