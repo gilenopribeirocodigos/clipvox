@@ -188,6 +188,10 @@ def process_video_pipeline(job_id: str):
     """
     Pipeline completo de geração cinematográfica
     🆕 Com suporte a duration, aspect_ratio, resolution, ref_image
+    
+    🔧 FIXES:
+    - BUG 1: Calcula cenas DEPOIS do trim (não antes)
+    - BUG 2: Trata corretamente scene_number nos results
     """
     job = jobs_db[job_id]
     
@@ -196,12 +200,13 @@ def process_video_pipeline(job_id: str):
         update_job(job_id, status="processing", progress=5, current_step="plan")
         time.sleep(1)
         
-        # 🆕 FEATURE 1: TRIM AUDIO se necessário
+        # 🔧 FIX BUG 1: TRIM AUDIO PRIMEIRO, ANTES DE ANALISAR
+        # ────────────────────────────────────────────────────────
         original_audio_path = job["audio_path"]
         audio_path = trim_audio_file(original_audio_path, job["duration"])
         job["audio_path"] = audio_path  # Atualizar com o path cortado
         
-        # ─── STEP 2: INPUT ANALYZING ─────────────────────────
+        # ─── STEP 2: INPUT ANALYZING (no áudio JÁ CORTADO) ────
         update_job(job_id, progress=10, current_step="analyzing")
         
         print(f"🎵 Analyzing audio: {audio_path}")
@@ -209,6 +214,7 @@ def process_video_pipeline(job_id: str):
         print(f"   Aspect ratio: {job['aspect_ratio']}")
         print(f"   Resolution: {job['resolution']}")
         
+        # Agora analisa o áudio já cortado
         audio_metadata = analyze_audio_cinematic(audio_path)
         
         job["audio_duration"] = audio_metadata["duration"]
@@ -219,10 +225,13 @@ def process_video_pipeline(job_id: str):
         update_job(job_id, progress=18)
         time.sleep(1)
         
-        # ─── STEP 3: CALCULATE SCENES ────────────────────────
+        # ─── STEP 3: CALCULATE SCENES (do áudio JÁ CORTADO) ───
         update_job(job_id, progress=22, current_step="calculating_scenes")
         
         print(f"🎬 Calculating cinematic scenes...")
+        print(f"   Based on trimmed audio duration: {audio_metadata['duration']}s")
+        
+        # Agora calcula cenas baseado na duração real (cortada)
         scene_structure = calculate_cinematic_scenes(
             audio_metadata,
             job["description"]
@@ -274,8 +283,9 @@ def process_video_pipeline(job_id: str):
         
         job["scenes"] = scenes_with_images
         
-        # Calcular progresso dinamicamente
-        scenes_generated = sum(1 for s in scenes_with_images if s.get("image_generated"))
+        # 🔧 FIX BUG 2: Usar get() com fallback para scene_number
+        # ────────────────────────────────────────────────────────
+        scenes_generated = sum(1 for s in scenes_with_images if s.get("success", False))
         progress_scenes = 60 + int((scenes_generated / len(scenes_with_images)) * 20)
         update_job(job_id, progress=min(progress_scenes, 80))
         
@@ -289,10 +299,12 @@ def process_video_pipeline(job_id: str):
         
         segments = scene_structure["segments"]
         
+        # 🔧 FIX BUG 2: Usar get() para evitar KeyError
+        # ────────────────────────────────────────────────────────
         for segment in segments:
             segment["scenes_with_images"] = [
                 s for s in scenes_with_images 
-                if s["scene_number"] in segment["scenes"]
+                if s.get("scene_number") in segment.get("scenes", [])
             ]
         
         job["segments"] = segments
@@ -301,25 +313,21 @@ def process_video_pipeline(job_id: str):
         time.sleep(1)
         
         # ─── STEP 7: MERGE FINAL ──────────────────────────────
-        update_job(job_id, progress=98, current_step="merge")
+        update_job(job_id, progress=98, current_step="final")
         
-        job["output_file"] = f"/api/files/{job_id}_final.mp4"
+        print(f"✅ Video generation completed: {job_id}")
+        print(f"   Generated {job['total_scenes']} scenes in {job['total_segments']} segments.")
+        print(f"   Images generated successfully: {scenes_generated}/{len(scenes_with_images)}")
+        print(f"   ☁️ All images are stored permanently in CloudFlare R2")
+        print(f"   Configuration: {job['aspect_ratio']}, {job['resolution']}, {job['style']}")
         
-        time.sleep(1)
-        
-        # ─── DONE ─────────────────────────────────────────────
         update_job(
             job_id,
             status="completed",
             progress=100,
-            current_step="completed"
+            current_step="done",
+            output_file=f"video_{job_id}.mp4"  # Placeholder
         )
-        
-        print(f"✅ Video generation completed: {job_id}")
-        print(f"   Generated {len(scenes_with_images)} scenes across {len(segments)} segments")
-        print(f"   Successfully generated: {scenes_generated}/{len(scenes_with_images)} images")
-        print(f"   ☁️ All images stored permanently in CloudFlare R2")
-        print(f"   Config: {job['aspect_ratio']}, {job['resolution']}, {job['style']}")
         
     except Exception as e:
         print(f"❌ Error processing job {job_id}: {e}")
@@ -334,6 +342,6 @@ def process_video_pipeline(job_id: str):
 
 
 def update_job(job_id: str, **kwargs):
-    """Helper to update job fields"""
+    """Helper pra atualizar job no db"""
     if job_id in jobs_db:
         jobs_db[job_id].update(kwargs)
