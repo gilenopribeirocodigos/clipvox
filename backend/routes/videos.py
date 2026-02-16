@@ -15,52 +15,38 @@ router = APIRouter()
 jobs_db = {}
 
 
-# 🆕 FEATURE 1: AUDIO TRIMMING HELPER
+# 🆕 TRIM VIRTUAL (SEM FFMPEG)
 # ────────────────────────────────────────────────────────────────
-def trim_audio_file(audio_path: str, duration: str) -> str:
+def get_virtual_duration(duration: str) -> int:
     """
-    Corta o áudio conforme a duração especificada
+    ⚡ TRIM VIRTUAL - Não corta o áudio, apenas retorna a duração desejada
+    
+    Esta função NÃO usa pydub/ffmpeg (que exigem binários do sistema).
+    Em vez disso, retornamos a duração que o usuário quer, e o código
+    usa isso para calcular o número correto de cenas.
+    
+    O áudio completo é analisado pelo librosa (para BPM, energia, etc),
+    mas a DURAÇÃO é sobrescrita para calcular apenas as cenas necessárias.
     
     Args:
-        audio_path: Caminho do arquivo de áudio original
         duration: "10", "30", "60", "120", "full", ou número em segundos
     
     Returns:
-        Caminho do arquivo cortado (ou original se "full")
+        int: Duração em segundos, ou None se "full"
     """
     if duration == "full":
-        return audio_path
+        return None
     
     try:
-        # Tentar importar pydub
-        try:
-            from pydub import AudioSegment
-        except ImportError:
-            print("⚠️ pydub not installed, cannot trim audio. Using full audio.")
-            return audio_path
-        
-        # Converter duration pra int
         duration_seconds = int(duration)
-        
-        print(f"✂️ Trimming audio to {duration_seconds} seconds...")
-        
-        # Carregar áudio
-        audio = AudioSegment.from_file(audio_path)
-        
-        # Cortar (do início até duration_seconds)
-        trimmed = audio[:duration_seconds * 1000]  # pydub usa milliseconds
-        
-        # Salvar
-        trimmed_path = audio_path.replace('.wav', f'_trimmed_{duration_seconds}s.wav')
-        trimmed.export(trimmed_path, format='wav')
-        
-        print(f"✅ Audio trimmed successfully: {os.path.basename(trimmed_path)}")
-        return trimmed_path
+        print(f"⏱️ Virtual trim: Using {duration_seconds}s for scene calculations")
+        print(f"   (Audio will be analyzed completely, but scenes calculated for {duration_seconds}s only)")
+        return duration_seconds
         
     except Exception as e:
-        print(f"❌ Error trimming audio: {e}")
-        print(f"   Using full audio instead")
-        return audio_path
+        print(f"❌ Error parsing duration: {e}")
+        print(f"   Using full audio duration")
+        return None
 
 
 @router.post("/generate")
@@ -189,9 +175,11 @@ def process_video_pipeline(job_id: str):
     Pipeline completo de geração cinematográfica
     🆕 Com suporte a duration, aspect_ratio, resolution, ref_image
     
-    🔧 FIXES:
-    - BUG 1: Calcula cenas DEPOIS do trim (não antes)
-    - BUG 2: Trata corretamente scene_number nos results
+    ⚡ TRIM VIRTUAL:
+    - Não corta o áudio fisicamente (sem pydub/ffmpeg)
+    - Analisa áudio completo (BPM, energia, etc)
+    - Sobrescreve duration para calcular cenas corretas
+    - Resultado: 15-20 cenas para 30s (não 41!)
     """
     job = jobs_db[job_id]
     
@@ -200,22 +188,25 @@ def process_video_pipeline(job_id: str):
         update_job(job_id, status="processing", progress=5, current_step="plan")
         time.sleep(1)
         
-        # 🔧 FIX BUG 1: TRIM AUDIO PRIMEIRO, ANTES DE ANALISAR
+        # ⚡ TRIM VIRTUAL: Pega duração desejada (não corta áudio)
         # ────────────────────────────────────────────────────────
-        original_audio_path = job["audio_path"]
-        audio_path = trim_audio_file(original_audio_path, job["duration"])
-        job["audio_path"] = audio_path  # Atualizar com o path cortado
+        virtual_duration = get_virtual_duration(job["duration"])
         
-        # ─── STEP 2: INPUT ANALYZING (no áudio JÁ CORTADO) ────
+        # ─── STEP 2: INPUT ANALYZING ──────────────────────────
         update_job(job_id, progress=10, current_step="analyzing")
         
-        print(f"🎵 Analyzing audio: {audio_path}")
+        print(f"🎵 Analyzing audio: {job['audio_path']}")
         print(f"   Duration preset: {job['duration']}")
+        if virtual_duration:
+            print(f"   Virtual duration override: {virtual_duration}s")
         print(f"   Aspect ratio: {job['aspect_ratio']}")
         print(f"   Resolution: {job['resolution']}")
         
-        # Agora analisa o áudio já cortado
-        audio_metadata = analyze_audio_cinematic(audio_path)
+        # ⚡ Passa virtual_duration para o analyzer
+        audio_metadata = analyze_audio_cinematic(
+            job["audio_path"],
+            duration_override=virtual_duration
+        )
         
         job["audio_duration"] = audio_metadata["duration"]
         job["audio_bpm"] = audio_metadata["bpm"]
@@ -225,13 +216,12 @@ def process_video_pipeline(job_id: str):
         update_job(job_id, progress=18)
         time.sleep(1)
         
-        # ─── STEP 3: CALCULATE SCENES (do áudio JÁ CORTADO) ───
+        # ─── STEP 3: CALCULATE SCENES ─────────────────────────
         update_job(job_id, progress=22, current_step="calculating_scenes")
         
         print(f"🎬 Calculating cinematic scenes...")
-        print(f"   Based on trimmed audio duration: {audio_metadata['duration']}s")
+        print(f"   Based on duration: {audio_metadata['duration']}s")
         
-        # Agora calcula cenas baseado na duração real (cortada)
         scene_structure = calculate_cinematic_scenes(
             audio_metadata,
             job["description"]
@@ -265,26 +255,24 @@ def process_video_pipeline(job_id: str):
         
         print(f"🎨 Generating {len(creative_concept['scenes'])} scene images with Stability AI...")
         print(f"   Style: {job['style']}")
-        print(f"   Aspect ratio: {job['aspect_ratio']}")  # 🆕
-        print(f"   Resolution: {job['resolution']}")      # 🆕
+        print(f"   Aspect ratio: {job['aspect_ratio']}")
+        print(f"   Resolution: {job['resolution']}")
         if job.get('ref_image_path'):
-            print(f"   Reference image: {os.path.basename(job['ref_image_path'])}")  # 🆕
+            print(f"   Reference image: {os.path.basename(job['ref_image_path'])}")
         print(f"📤 Uploading to CloudFlare R2...")
         
-        # 🆕 Passar todos os novos parâmetros
         scenes_with_images = generate_scenes_batch(
             creative_concept["scenes"],
             style=job["style"],
-            aspect_ratio=job["aspect_ratio"],      # 🆕
-            resolution=job["resolution"],          # 🆕
-            reference_image_path=job.get("ref_image_path"),  # 🆕
+            aspect_ratio=job["aspect_ratio"],
+            resolution=job["resolution"],
+            reference_image_path=job.get("ref_image_path"),
             job_id=job_id
         )
         
         job["scenes"] = scenes_with_images
         
-        # 🔧 FIX BUG 2: Usar get() com fallback para scene_number
-        # ────────────────────────────────────────────────────────
+        # Calcular progresso
         scenes_generated = sum(1 for s in scenes_with_images if s.get("success", False))
         progress_scenes = 60 + int((scenes_generated / len(scenes_with_images)) * 20)
         update_job(job_id, progress=min(progress_scenes, 80))
@@ -299,8 +287,6 @@ def process_video_pipeline(job_id: str):
         
         segments = scene_structure["segments"]
         
-        # 🔧 FIX BUG 2: Usar get() para evitar KeyError
-        # ────────────────────────────────────────────────────────
         for segment in segments:
             segment["scenes_with_images"] = [
                 s for s in scenes_with_images 
@@ -326,7 +312,7 @@ def process_video_pipeline(job_id: str):
             status="completed",
             progress=100,
             current_step="done",
-            output_file=f"video_{job_id}.mp4"  # Placeholder
+            output_file=f"video_{job_id}.mp4"
         )
         
     except Exception as e:
