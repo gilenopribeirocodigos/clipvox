@@ -2,12 +2,19 @@
 Análise cinematográfica de áudio
 Detecta BPM, energia, estrutura musical e características espectrais
 para calcular scenes dinamicamente
+
+⚡ MODIFICADO: Aceita duration_override para Trim Virtual
 """
 import numpy as np
 
-def analyze_audio_cinematic(audio_path: str) -> dict:
+def analyze_audio_cinematic(audio_path: str, duration_override: int = None) -> dict:
     """
     Análise profunda do áudio para geração cinematográfica
+    
+    Args:
+        audio_path: Caminho do arquivo de áudio
+        duration_override: ⚡ NOVO - Duração em segundos para sobrescrever
+                          (usado no Trim Virtual sem pydub/ffmpeg)
     
     Returns:
         dict com: duration, bpm, key, energy_profile, structural_segments, 
@@ -19,7 +26,18 @@ def analyze_audio_cinematic(audio_path: str) -> dict:
         
         # Load audio
         y, sr = librosa.load(audio_path, sr=22050)
-        duration = librosa.get_duration(y=y, sr=sr)
+        duration_real = librosa.get_duration(y=y, sr=sr)
+        
+        # ⚡ TRIM VIRTUAL: Se tiver override, usa ele
+        # ────────────────────────────────────────────────────────
+        if duration_override:
+            duration = float(duration_override)
+            print(f"⚡ Virtual trim applied:")
+            print(f"   Real audio duration: {duration_real:.1f}s")
+            print(f"   Using for calculations: {duration}s")
+            print(f"   (Analyzing full audio for BPM/energy, but calculating scenes for {duration}s)")
+        else:
+            duration = duration_real
         
         # ─── 1. TEMPO & RHYTHM ANALYSIS ───────────────────────
         tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
@@ -75,7 +93,6 @@ def analyze_audio_cinematic(audio_path: str) -> dict:
         
         # ─── 5. STRUCTURAL SEGMENTATION ───────────────────────
         # Detecta mudanças estruturais (intro, verse, chorus, bridge, outro)
-        # Usa Self-Similarity Matrix
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
         
         # Simplified structure detection: find peaks in novelty
@@ -92,7 +109,8 @@ def analyze_audio_cinematic(audio_path: str) -> dict:
                 step = len(segment_times) // 8
                 segment_times = segment_times[::step][:8]
             
-            structural_segments = [float(t / duration) for t in segment_times]
+            # ⚡ Normaliza baseado na duration (real ou override)
+            structural_segments = [float(t / duration) for t in segment_times if t <= duration]
         except:
             # Fallback: divide in 4 equal parts
             structural_segments = [0.0, 0.25, 0.5, 0.75, 1.0]
@@ -102,7 +120,7 @@ def analyze_audio_cinematic(audio_path: str) -> dict:
         
         # ─── RESULT ───────────────────────────────────────────
         return {
-            "duration": round(duration, 2),
+            "duration": round(duration, 2),  # ⚡ Usa override se fornecido
             "bpm": round(bpm, 1),
             "key": key_with_mode,
             "energy_profile": energy_profile,
@@ -119,22 +137,28 @@ def analyze_audio_cinematic(audio_path: str) -> dict:
     except ImportError:
         # Fallback se librosa não tiver instalado
         print("⚠️ librosa not available, using mock data")
-        return _get_mock_audio_data()
+        return _get_mock_audio_data(duration_override)
     except Exception as e:
         print(f"❌ Audio analysis error: {e}")
-        return _get_mock_audio_data()
+        return _get_mock_audio_data(duration_override)
 
 
-def _get_mock_audio_data():
-    """Dados mock para desenvolvimento sem librosa"""
+def _get_mock_audio_data(duration_override: int = None):
+    """
+    Dados mock para desenvolvimento sem librosa
+    
+    ⚡ MODIFICADO: Aceita duration_override
+    """
+    duration = duration_override if duration_override else 150.0
+    
     return {
-        "duration": 150.0,
+        "duration": duration,
         "bpm": 130.0,
         "key": "A Major",
         "energy_profile": [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 0.9, 0.8, 
                           0.7, 0.8, 0.9, 1.0, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5,
                           0.6, 0.7, 0.8, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3],
-        "beat_times": list(range(0, 150, 2)),
+        "beat_times": list(range(0, int(duration), 2)),
         "structural_segments": [0.0, 0.15, 0.35, 0.55, 0.75, 0.9, 1.0],
         "spectral_characteristics": {
             "centroid": 2000.0,
