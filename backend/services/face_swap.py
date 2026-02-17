@@ -1,10 +1,10 @@
 """
-🎭 Face Swap Service - Replicate API v1.0+
+🎭 Face Swap Service - Replicate API v1.0+ (MODELO CORRETO)
 ────────────────────────────────────────────────────────────────
 Troca rostos nas cenas geradas para colocar a pessoa nas imagens
-Usa Replicate API v1.0+ para face swap de alta qualidade
+Usa easel/advanced-face-swap - modelo comercial de alta qualidade
 
-✅ CORRIGIDO: Compatível com replicate>=1.0.0
+✅ CORRIGIDO: Modelo válido + Replicate 1.0+ compatibility
 """
 
 import os
@@ -18,7 +18,7 @@ def face_swap_replicate(
     output_path: str = None
 ) -> Optional[str]:
     """
-    Faz face swap usando Replicate API v1.0+
+    Faz face swap usando Replicate API v1.0+ com easel/advanced-face-swap
     
     Args:
         target_image_path: Caminho da imagem gerada (scene)
@@ -37,7 +37,7 @@ def face_swap_replicate(
         return target_image_path  # Retorna imagem original
     
     try:
-        # ✅ NOVO: Importar replicate 1.0+
+        # ✅ Importar replicate 1.0+
         import replicate
         
         # ✅ CRÍTICO: Criar client com token explícito
@@ -50,9 +50,10 @@ def face_swap_replicate(
             with open(source_face_path, "rb") as source_file:
                 
                 # ─── Chamar Replicate API v1.0+ ──────────────
-                # Modelo: yan-ops/face_swap
+                # ✅ Modelo correto: easel/advanced-face-swap
+                # Comercial, alta qualidade, preserva features
                 output = client.run(
-                    "yan-ops/face_swap:d5900f9ebed33e7ae6a43c6cb24e3d21f886c239bcb72b082312c8e0db367c",
+                    "easel/advanced-face-swap",
                     input={
                         "target_image": target_file,
                         "swap_image": source_file,
