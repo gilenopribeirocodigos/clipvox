@@ -1,18 +1,15 @@
 """
-🎭 Face Swap Service - Replicate API
+🎭 Face Swap Service - Replicate API v1.0+
 ────────────────────────────────────────────────────────────────
 Troca rostos nas cenas geradas para colocar a pessoa nas imagens
-Usa Replicate API para face swap de alta qualidade
+Usa Replicate API v1.0+ para face swap de alta qualidade
 
-Similar ao FREEBEAT: pessoa aparece nas cenas!
+✅ CORRIGIDO: Compatível com replicate>=1.0.0
 """
 
 import os
 import requests
-import base64
 from typing import Optional
-from PIL import Image
-import io
 
 
 def face_swap_replicate(
@@ -21,7 +18,7 @@ def face_swap_replicate(
     output_path: str = None
 ) -> Optional[str]:
     """
-    Faz face swap usando Replicate API
+    Faz face swap usando Replicate API v1.0+
     
     Args:
         target_image_path: Caminho da imagem gerada (scene)
@@ -40,27 +37,27 @@ def face_swap_replicate(
         return target_image_path  # Retorna imagem original
     
     try:
+        # ✅ NOVO: Importar replicate 1.0+
         import replicate
+        
+        # ✅ CRÍTICO: Criar client com token explícito
+        client = replicate.Client(api_token=replicate_api_key)
         
         print(f"🎭 Face swap: {os.path.basename(source_face_path)} → {os.path.basename(target_image_path)}")
         
-        # ─── Converter imagens para base64 ───────────────────
-        with open(target_image_path, "rb") as f:
-            target_b64 = base64.b64encode(f.read()).decode()
-        
-        with open(source_face_path, "rb") as f:
-            source_b64 = base64.b64encode(f.read()).decode()
-        
-        # ─── Chamar Replicate API ────────────────────────────
-        # Usando modelo yan-ops/face_swap (rápido e qualidade boa)
-        output = replicate.run(
-            "yan-ops/face_swap:d5900f9ebed33e7ae6a43c6cb24cont3d21f886c239bcb72b082312c8e",
-            input={
-                "target_image": f"data:image/jpeg;base64,{target_b64}",
-                "swap_image": f"data:image/jpeg;base64,{source_b64}",
-                "cache_days": 0  # Não cache (privacidade)
-            }
-        )
+        # ─── Abrir imagens como file handles ──────────────────
+        with open(target_image_path, "rb") as target_file:
+            with open(source_face_path, "rb") as source_file:
+                
+                # ─── Chamar Replicate API v1.0+ ──────────────
+                # Modelo: yan-ops/face_swap
+                output = client.run(
+                    "yan-ops/face_swap:d5900f9ebed33e7ae6a43c6cb24e3d21f886c239bcb72b082312c8e0db367c",
+                    input={
+                        "target_image": target_file,
+                        "swap_image": source_file,
+                    }
+                )
         
         # ─── Output é uma URL da imagem gerada ───────────────
         if not output:
@@ -71,7 +68,7 @@ def face_swap_replicate(
         response = requests.get(output, timeout=30)
         
         if response.status_code != 200:
-            print(f"❌ Face swap failed: {response.status_code}")
+            print(f"❌ Face swap failed: HTTP {response.status_code}")
             return target_image_path
         
         # ─── Salvar imagem com face swap ─────────────────────
@@ -135,68 +132,3 @@ def face_swap_batch(
     print(f"✅ Face swap completed: {successful_swaps}/{len(scene_images)} scenes")
     
     return swapped_images
-
-
-# ═══════════════════════════════════════════════════════════════════
-# MODELO ALTERNATIVO (caso o yan-ops não funcione)
-# ═══════════════════════════════════════════════════════════════════
-
-def face_swap_replicate_alt(
-    target_image_path: str,
-    source_face_path: str,
-    output_path: str = None
-) -> Optional[str]:
-    """
-    Face swap usando modelo alternativo: lucataco/faceswap
-    
-    Este modelo é mais estável e amplamente usado
-    """
-    
-    replicate_api_key = os.getenv("REPLICATE_API_KEY", "")
-    
-    if not replicate_api_key:
-        return target_image_path
-    
-    try:
-        import replicate
-        
-        print(f"🎭 Face swap (alt model): {os.path.basename(source_face_path)} → {os.path.basename(target_image_path)}")
-        
-        # Usar URLs ou base64
-        with open(target_image_path, "rb") as f:
-            target_data = f.read()
-        
-        with open(source_face_path, "rb") as f:
-            source_data = f.read()
-        
-        # Modelo alternativo
-        output = replicate.run(
-            "lucataco/faceswap:9a4863e735f490701e0ebcae4aed3857f6c0f088f79cc100bfe36c7a562cdaa4",
-            input={
-                "target_image": target_data,
-                "swap_image": source_data
-            }
-        )
-        
-        if not output:
-            return target_image_path
-        
-        # Download
-        response = requests.get(output, timeout=30)
-        
-        if response.status_code != 200:
-            return target_image_path
-        
-        if not output_path:
-            output_path = target_image_path.replace('.jpg', '_faceswap.jpg')
-        
-        with open(output_path, 'wb') as f:
-            f.write(response.content)
-        
-        print(f"✅ Face swap (alt) completed: {os.path.basename(output_path)}")
-        
-        return output_path
-        
-    except Exception as e:
-        print(f"❌ Face swap (alt) error: {e}")
-        return target_image_path
