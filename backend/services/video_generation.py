@@ -1,7 +1,8 @@
 """
-🎬 ClipVox - Video Generation Service (Image Generation)
+🎬 ClipVox - Video Generation Service (Image Generation + Face Swap)
 ──────────────────────────────────────────────────────────────
 Gera imagens cinematográficas usando Stability AI (SD3.5)
+🎭 NOVO: Face Swap com Replicate API (coloca pessoa nas cenas!)
 E faz upload pro CloudFlare R2 para armazenamento permanente
 
 🆕 FEATURES:
@@ -9,28 +10,31 @@ E faz upload pro CloudFlare R2 para armazenamento permanente
 - ✅ FEATURE 3: Resolution (720p, 1080p)
 - ✅ FEATURE 4: Visual Styles (10+ estilos)
 - ✅ FEATURE 5: Reference Image (image-to-image)
-- ✅ FIX: Redimensiona ref image antes de enviar pra API
+- ✅ FEATURE 6: Face Swap 🎭 (pessoa nas cenas!)
 """
 
 import os
 import base64
 import requests
 from typing import Optional
-from PIL import Image  # 🆕 Para redimensionar imagem de referência
+from PIL import Image
 import io
 
 from config import (
     STABILITY_API_KEY, 
     UPLOAD_DIR, 
-    VISUAL_STYLES,  # 🆕 FEATURE 4
+    VISUAL_STYLES,
     R2_BUCKET_NAME,
     R2_PUBLIC_URL,
     get_r2_client
 )
 
+# 🎭 NOVO: Importar face swap service
+from services.face_swap import face_swap_replicate
+
 
 # ═══════════════════════════════════════════════════════════════════
-# 🆕 ASPECT RATIO DIMENSIONS
+# ASPECT RATIO DIMENSIONS
 # ═══════════════════════════════════════════════════════════════════
 ASPECT_RATIO_DIMENSIONS = {
     "16:9": {
@@ -53,7 +57,7 @@ ASPECT_RATIO_DIMENSIONS = {
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 🆕 FIX: RESIZE REFERENCE IMAGE TO ASPECT RATIO
+# RESIZE REFERENCE IMAGE TO ASPECT RATIO
 # ═══════════════════════════════════════════════════════════════════
 def resize_image_to_aspect_ratio(
     image_path: str,
@@ -89,7 +93,6 @@ def resize_image_to_aspect_ratio(
         print(f"   Target: {target_width}x{target_height} ({aspect_ratio}, {resolution})")
         
         # ─── Calcular crop para manter aspect ratio ───────────────
-        # Calcula qual dimensão deve ser cropada
         target_aspect = target_width / target_height
         original_aspect = original_width / original_height
         
@@ -166,22 +169,23 @@ def upload_to_r2(local_path: str, r2_key: str) -> Optional[str]:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# GENERATE SCENE IMAGE (STABILITY AI + R2)
+# GENERATE SCENE IMAGE (STABILITY AI + FACE SWAP + R2)
 # ═══════════════════════════════════════════════════════════════════
 def generate_scene_image(
     prompt: str, 
     scene_number: int, 
     style: str = "realistic",
-    aspect_ratio: str = "16:9",       # 🆕 FEATURE 2
-    resolution: str = "720p",         # 🆕 FEATURE 3
-    reference_image_path: str = None, # 🆕 FEATURE 5
+    aspect_ratio: str = "16:9",
+    resolution: str = "720p",
+    reference_image_path: str = None,
     job_id: str = ""
 ) -> dict:
     """
     Gera uma imagem para uma scene usando Stability AI
+    🎭 NOVO: Aplica face swap se reference_image fornecida
     E faz upload pro CloudFlare R2
     
-    🆕 Args:
+    Args:
         prompt: Prompt em inglês descrevendo a cena
         scene_number: Número da scene
         style: Estilo visual (realistic, cinematic, anime, etc)
@@ -191,7 +195,7 @@ def generate_scene_image(
         job_id: ID do job
     
     Returns:
-        dict com: success, image_path, image_url, r2_url
+        dict com: success, image_path, image_url, r2_url, face_swap_applied
     """
     
     if not STABILITY_API_KEY:
@@ -202,7 +206,7 @@ def generate_scene_image(
         # ─── Stability AI API Config ──────────────────────────
         url = "https://api.stability.ai/v2beta/stable-image/generate/sd3"
         
-        # 🆕 FEATURE 4: Pegar prefix do estilo
+        # Pegar prefix do estilo
         style_config = VISUAL_STYLES.get(style, VISUAL_STYLES["realistic"])
         style_prefix = style_config["prefix"]
         
@@ -215,14 +219,14 @@ def generate_scene_image(
             "model": "sd3.5-large",
         }
         
-        # 🆕 FEATURE 5: Se tem imagem de referência, redimensiona e usa image-to-image
+        # Se tem imagem de referência, redimensiona e usa image-to-image
         files = {"none": ''}
         mode = "text-to-image"
         
         if reference_image_path and os.path.exists(reference_image_path):
             print(f"🖼️ Using reference image for scene {scene_number}")
             
-            # 🔧 FIX CRÍTICO: Redimensionar imagem ANTES de enviar
+            # Redimensionar imagem ANTES de enviar
             resized_image_path = resize_image_to_aspect_ratio(
                 reference_image_path,
                 aspect_ratio,
@@ -235,14 +239,11 @@ def generate_scene_image(
             
             mode = "image-to-image"
             payload["mode"] = "image-to-image"
-            payload["strength"] = 0.7  # 0-1, quanto mais alto mais difere da original
-            
-            # ❌ NÃO enviar aspect_ratio quando mode = image-to-image
-            # A Stability AI usa o aspect ratio da imagem enviada
+            payload["strength"] = 0.7
             
         else:
-            # ✅ SÓ envia aspect_ratio quando NÃO tem reference image
-            payload["aspect_ratio"] = aspect_ratio  # "16:9", "9:16", "1:1", "4:3"
+            # SÓ envia aspect_ratio quando NÃO tem reference image
+            payload["aspect_ratio"] = aspect_ratio
         
         headers = {
             "Authorization": f"Bearer {STABILITY_API_KEY}",
@@ -288,22 +289,44 @@ def generate_scene_image(
         with open(local_path, "wb") as f:
             f.write(image_data)
         
+        # ─── 🎭 FACE SWAP (SE TIVER REFERENCE IMAGE) ──────────
+        face_swap_applied = False
+        
+        if reference_image_path and os.path.exists(reference_image_path):
+            print(f"🎭 Applying face swap to scene {scene_number}...")
+            
+            swapped_path = face_swap_replicate(
+                target_image_path=local_path,
+                source_face_path=reference_image_path
+            )
+            
+            # Se face swap funcionou, usar imagem swapped
+            if swapped_path != local_path:
+                local_path = swapped_path
+                face_swap_applied = True
+                print(f"✅ Face swap applied to scene {scene_number}")
+            else:
+                print(f"⚠️ Face swap skipped for scene {scene_number} (using original)")
+        
         # ─── Upload pro R2 ────────────────────────────────────
         r2_key = f"jobs/{job_id}/{filename}" if job_id else f"scenes/{filename}"
         r2_url = upload_to_r2(local_path, r2_key)
         
         print(f"✅ Scene {scene_number} generated and uploaded")
+        if face_swap_applied:
+            print(f"   🎭 Face swap: APPLIED")
         
         return {
             "success": True,
-            "scene_number": scene_number,  # 🔧 FIX: Incluir scene_number
+            "scene_number": scene_number,
             "image_path": local_path,
             "image_url": r2_url or f"/api/files/{filename}",
             "r2_url": r2_url,
             "prompt_used": enriched_prompt[:100],
             "mode": mode,
             "aspect_ratio": aspect_ratio,
-            "resolution": resolution
+            "resolution": resolution,
+            "face_swap_applied": face_swap_applied  # 🎭 NOVO
         }
         
     except requests.exceptions.Timeout:
@@ -332,14 +355,15 @@ def _generate_placeholder_image(scene_number: int, prompt: str) -> dict:
     
     return {
         "success": False,
-        "scene_number": scene_number,  # 🔧 FIX: Incluir scene_number
+        "scene_number": scene_number,
         "image_path": local_path,
         "image_url": f"/api/files/{filename}",
         "r2_url": None,
         "prompt_used": prompt[:100],
         "mode": "placeholder",
         "aspect_ratio": "16:9",
-        "resolution": "720p"
+        "resolution": "720p",
+        "face_swap_applied": False
     }
 
 
@@ -349,20 +373,21 @@ def _generate_placeholder_image(scene_number: int, prompt: str) -> dict:
 def generate_scenes_batch(
     scenes: list,
     style: str = "realistic",
-    aspect_ratio: str = "16:9",       # 🆕 FEATURE 2
-    resolution: str = "720p",         # 🆕 FEATURE 3
-    reference_image_path: str = None, # 🆕 FEATURE 5
+    aspect_ratio: str = "16:9",
+    resolution: str = "720p",
+    reference_image_path: str = None,
     job_id: str = ""
 ) -> list:
     """
     Gera imagens para múltiplas scenes em batch
+    🎭 NOVO: Aplica face swap em cada cena se reference_image fornecida
     
     Args:
         scenes: Lista de scenes [{scene_number, prompt, ...}]
         style: Estilo visual
         aspect_ratio: Proporção da imagem
         resolution: Qualidade
-        reference_image_path: Caminho da imagem de referência
+        reference_image_path: Caminho da imagem de referência (🎭 para face swap!)
         job_id: ID do job
     
     Returns:
@@ -371,6 +396,7 @@ def generate_scenes_batch(
     
     results = []
     successful_count = 0
+    face_swap_count = 0
     
     print(f"🎨 Generating {len(scenes)} scene images with Stability AI...")
     print(f"   Style: {style}")
@@ -378,6 +404,7 @@ def generate_scenes_batch(
     print(f"   Resolution: {resolution}")
     if reference_image_path:
         print(f"   Reference Image: {os.path.basename(reference_image_path)}")
+        print(f"   🎭 Face Swap: ENABLED")
     
     print("📤 Uploading to CloudFlare R2...")
     
@@ -388,15 +415,21 @@ def generate_scenes_batch(
             style=style,
             aspect_ratio=aspect_ratio,
             resolution=resolution,
-            reference_image_path=reference_image_path,
+            reference_image_path=reference_image_path,  # 🎭 Para face swap!
             job_id=job_id
         )
         
         if result["success"]:
             successful_count += 1
         
+        if result.get("face_swap_applied"):
+            face_swap_count += 1
+        
         results.append(result)
     
     print(f"✅ Generated {successful_count}/{len(scenes)} scenes successfully")
+    
+    if face_swap_count > 0:
+        print(f"🎭 Face swap applied: {face_swap_count}/{len(scenes)} scenes")
     
     return results
