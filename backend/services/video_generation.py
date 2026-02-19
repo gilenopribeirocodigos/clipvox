@@ -2,7 +2,7 @@
 🎬 ClipVox - Video Generation Service (Image Generation + Face Swap)
 ──────────────────────────────────────────────────────────────
 Gera imagens cinematográficas usando Stability AI (SD3.5)
-🎭 NOVO: Face Swap com Replicate API (coloca pessoa nas cenas!)
+🎭 NOVO: Face Swap com PiAPI (coloca pessoa nas cenas!)
 E faz upload pro CloudFlare R2 para armazenamento permanente
 
 🆕 FEATURES:
@@ -10,7 +10,7 @@ E faz upload pro CloudFlare R2 para armazenamento permanente
 - ✅ FEATURE 3: Resolution (720p, 1080p)
 - ✅ FEATURE 4: Visual Styles (10+ estilos)
 - ✅ FEATURE 5: Reference Image (image-to-image)
-- ✅ FEATURE 6: Face Swap 🎭 (pessoa nas cenas!)
+- ✅ FEATURE 6: Face Swap 🎭 (pessoa nas cenas!) - PiAPI
 """
 
 import os
@@ -29,8 +29,8 @@ from config import (
     get_r2_client
 )
 
-# 🎭 NOVO: Importar face swap service
-from services.face_swap import face_swap_replicate
+# 🎭 NOVO: Importar face swap service (PiAPI)
+from services.face_swap import face_swap_batch
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -169,7 +169,7 @@ def upload_to_r2(local_path: str, r2_key: str) -> Optional[str]:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# GENERATE SCENE IMAGE (STABILITY AI + FACE SWAP + R2)
+# GENERATE SCENE IMAGE (STABILITY AI + R2)
 # ═══════════════════════════════════════════════════════════════════
 def generate_scene_image(
     prompt: str, 
@@ -182,8 +182,9 @@ def generate_scene_image(
 ) -> dict:
     """
     Gera uma imagem para uma scene usando Stability AI
-    🎭 NOVO: Aplica face swap se reference_image fornecida
     E faz upload pro CloudFlare R2
+    
+    🎭 NOTA: Face swap é aplicado EM BATCH depois de gerar todas as cenas!
     
     Args:
         prompt: Prompt em inglês descrevendo a cena
@@ -191,11 +192,11 @@ def generate_scene_image(
         style: Estilo visual (realistic, cinematic, anime, etc)
         aspect_ratio: Proporção da imagem (16:9, 9:16, 1:1, 4:3)
         resolution: Qualidade (720p, 1080p)
-        reference_image_path: Caminho da imagem de referência (opcional)
+        reference_image_path: Caminho da imagem de referência (para image-to-image)
         job_id: ID do job
     
     Returns:
-        dict com: success, image_path, image_url, r2_url, face_swap_applied
+        dict com: success, image_path, image_url, r2_url
     """
     
     if not STABILITY_API_KEY:
@@ -289,32 +290,11 @@ def generate_scene_image(
         with open(local_path, "wb") as f:
             f.write(image_data)
         
-        # ─── 🎭 FACE SWAP (SE TIVER REFERENCE IMAGE) ──────────
-        face_swap_applied = False
-        
-        if reference_image_path and os.path.exists(reference_image_path):
-            print(f"🎭 Applying face swap to scene {scene_number}...")
-            
-            swapped_path = face_swap_replicate(
-                target_image_path=local_path,
-                source_face_path=reference_image_path
-            )
-            
-            # Se face swap funcionou, usar imagem swapped
-            if swapped_path != local_path:
-                local_path = swapped_path
-                face_swap_applied = True
-                print(f"✅ Face swap applied to scene {scene_number}")
-            else:
-                print(f"⚠️ Face swap skipped for scene {scene_number} (using original)")
-        
         # ─── Upload pro R2 ────────────────────────────────────
         r2_key = f"jobs/{job_id}/{filename}" if job_id else f"scenes/{filename}"
         r2_url = upload_to_r2(local_path, r2_key)
         
         print(f"✅ Scene {scene_number} generated and uploaded")
-        if face_swap_applied:
-            print(f"   🎭 Face swap: APPLIED")
         
         return {
             "success": True,
@@ -325,8 +305,7 @@ def generate_scene_image(
             "prompt_used": enriched_prompt[:100],
             "mode": mode,
             "aspect_ratio": aspect_ratio,
-            "resolution": resolution,
-            "face_swap_applied": face_swap_applied  # 🎭 NOVO
+            "resolution": resolution
         }
         
     except requests.exceptions.Timeout:
@@ -362,8 +341,7 @@ def _generate_placeholder_image(scene_number: int, prompt: str) -> dict:
         "prompt_used": prompt[:100],
         "mode": "placeholder",
         "aspect_ratio": "16:9",
-        "resolution": "720p",
-        "face_swap_applied": False
+        "resolution": "720p"
     }
 
 
@@ -380,7 +358,7 @@ def generate_scenes_batch(
 ) -> list:
     """
     Gera imagens para múltiplas scenes em batch
-    🎭 NOVO: Aplica face swap em cada cena se reference_image fornecida
+    🎭 NOVO: Aplica face swap EM BATCH após gerar todas as cenas (PiAPI)
     
     Args:
         scenes: Lista de scenes [{scene_number, prompt, ...}]
@@ -396,7 +374,6 @@ def generate_scenes_batch(
     
     results = []
     successful_count = 0
-    face_swap_count = 0
     
     print(f"🎨 Generating {len(scenes)} scene images with Stability AI...")
     print(f"   Style: {style}")
@@ -404,10 +381,10 @@ def generate_scenes_batch(
     print(f"   Resolution: {resolution}")
     if reference_image_path:
         print(f"   Reference Image: {os.path.basename(reference_image_path)}")
-        print(f"   🎭 Face Swap: ENABLED")
     
     print("📤 Uploading to CloudFlare R2...")
     
+    # ─── STEP 1: Gerar TODAS as cenas ─────────────────────────
     for scene in scenes:
         result = generate_scene_image(
             prompt=scene["prompt"],
@@ -415,21 +392,54 @@ def generate_scenes_batch(
             style=style,
             aspect_ratio=aspect_ratio,
             resolution=resolution,
-            reference_image_path=reference_image_path,  # 🎭 Para face swap!
+            reference_image_path=reference_image_path,  # Para image-to-image
             job_id=job_id
         )
         
         if result["success"]:
             successful_count += 1
         
-        if result.get("face_swap_applied"):
-            face_swap_count += 1
-        
         results.append(result)
     
     print(f"✅ Generated {successful_count}/{len(scenes)} scenes successfully")
     
-    if face_swap_count > 0:
-        print(f"🎭 Face swap applied: {face_swap_count}/{len(scenes)} scenes")
+    # ─── STEP 2: Aplicar FACE SWAP em BATCH (PiAPI) ───────────
+    if reference_image_path and os.path.exists(reference_image_path):
+        print(f"\n🎭 Applying face swap to all scenes using PiAPI...")
+        
+        # Coletar caminhos das imagens geradas
+        scene_images = [result["image_path"] for result in results if result["success"]]
+        
+        if scene_images:
+            # Aplicar face swap em batch (mais eficiente!)
+            swapped_images = face_swap_batch(
+                scene_images=scene_images,
+                reference_face_path=reference_image_path
+            )
+            
+            # Atualizar results com imagens com face swap
+            swap_index = 0
+            for i, result in enumerate(results):
+                if result["success"]:
+                    swapped_path = swapped_images[swap_index]
+                    swap_index += 1
+                    
+                    # Se face swap funcionou (path diferente)
+                    if swapped_path != result["image_path"]:
+                        # Upload da imagem com face swap pro R2
+                        filename = os.path.basename(swapped_path)
+                        r2_key = f"jobs/{job_id}/{filename}" if job_id else f"scenes/{filename}"
+                        r2_url = upload_to_r2(swapped_path, r2_key)
+                        
+                        # Atualizar result
+                        results[i]["image_path"] = swapped_path
+                        results[i]["image_url"] = r2_url or f"/api/files/{filename}"
+                        results[i]["r2_url"] = r2_url
+                        results[i]["face_swap_applied"] = True
+                    else:
+                        results[i]["face_swap_applied"] = False
+            
+            face_swap_count = sum(1 for r in results if r.get("face_swap_applied"))
+            print(f"🎭 Face swap completed: {face_swap_count}/{len(scene_images)} scenes")
     
     return results
