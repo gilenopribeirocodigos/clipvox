@@ -324,10 +324,14 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosGenerated }) {
   const [error,         setError]         = useState(null)
   const pollRef = useRef()
 
-  // Sincronizar com jobStatus
+  // Sincronizar com jobStatus — só sobrescreve se o status for relevante
   useEffect(() => {
-    if (jobStatus?.videos_status) setVideosStatus(jobStatus.videos_status)
-    if (jobStatus?.video_clips)   setVideoClips(jobStatus.video_clips)
+    const s = jobStatus?.videos_status
+    // "ready" e "pending" = ainda não gerou → deixa como null para mostrar botão
+    if (s === 'processing' || s === 'completed' || s === 'failed') {
+      setVideosStatus(s)
+    }
+    if (jobStatus?.video_clips) setVideoClips(jobStatus.video_clips)
   }, [jobStatus])
 
   // Polling quando em processamento
@@ -407,8 +411,8 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosGenerated }) {
         )}
       </div>
 
-      {/* Estado: aguardando clique */}
-      {!videosStatus && (
+      {/* Estado: aguardando clique — mostra botão para status null, "pending" ou "ready" */}
+      {(!videosStatus || videosStatus === 'pending' || videosStatus === 'ready') && (
         <>
           {/* Seletor modo std/pro */}
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:16 }}>
