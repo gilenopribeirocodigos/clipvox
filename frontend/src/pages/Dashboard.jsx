@@ -85,7 +85,6 @@ function UploadZone({ onStart }) {
   const fileRef                         = useRef()
   const imageRef                        = useRef()
 
-  // 🆕 FEATURE 4: ESTILOS EXPANDIDOS (10+ estilos)
   const styles = [
     { id:'realistic',       label:'Fotorrealista',   emoji:'📷' },
     { id:'cinematic',       label:'Cinemático',      emoji:'🎬' },
@@ -99,7 +98,6 @@ function UploadZone({ onStart }) {
     { id:'oil_painting',    label:'Pintura Óleo',    emoji:'🖼️' }
   ]
 
-  // 🆕 FEATURE 1: DURATION PRESETS
   const durations = [
     { value: '10',  label: '10s'  },
     { value: '15',  label: '15s'  },
@@ -110,7 +108,6 @@ function UploadZone({ onStart }) {
     { value: 'custom', label: 'Personalizado' }
   ]
 
-  // 🆕 FEATURE 2: ASPECT RATIOS
   const aspectRatios = [
     { value: '16:9',  label: 'Horizontal',      desc: '1920×1080' },
     { value: '9:16',  label: 'Vertical',        desc: '1080×1920' },
@@ -118,17 +115,22 @@ function UploadZone({ onStart }) {
     { value: '4:3',   label: 'Clássico',        desc: '1440×1080' }
   ]
 
-  // 🆕 FEATURE 3: RESOLUÇÕES
   const resolutions = [
     { value: '720p',  label: '720p',  desc: 'Rápido' },
     { value: '1080p', label: '1080p', desc: 'Premium' }
   ]
 
   const acceptAudio = f => {
-    if (f && /^audio\//.test(f.type)) setFile(f)
+    if (f && (
+      /^audio\//.test(f.type) ||
+      f.type === 'application/octet-stream' ||
+      f.type === 'video/mp4' ||
+      /\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(f.name)
+    )) {
+      setFile(f)
+    }
   }
 
-  // 🆕 FEATURE 5: UPLOAD DE IMAGEM DE REFERÊNCIA
   const acceptImage = f => {
     if (f && /^image\//.test(f.type)) {
       setRefImage(f)
@@ -173,7 +175,7 @@ function UploadZone({ onStart }) {
         )}
       </div>
 
-      {/* 🆕 FEATURE 1: DURATION PRESET */}
+      {/* DURATION */}
       <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>⏱️ DURAÇÃO DO VÍDEO</label>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:6, marginBottom:16 }}>
         {durations.map(d => (
@@ -199,7 +201,7 @@ function UploadZone({ onStart }) {
         />
       )}
 
-      {/* 🆕 FEATURE 2: ASPECT RATIO */}
+      {/* ASPECT RATIO */}
       <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>📐 PROPORÇÃO (ASPECT RATIO)</label>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8, marginBottom:22 }}>
         {aspectRatios.map(ar => (
@@ -215,7 +217,7 @@ function UploadZone({ onStart }) {
         ))}
       </div>
 
-      {/* 🆕 FEATURE 3: RESOLUÇÃO */}
+      {/* RESOLUÇÃO */}
       <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>🎥 RESOLUÇÃO</label>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:22 }}>
         {resolutions.map(res => (
@@ -231,7 +233,7 @@ function UploadZone({ onStart }) {
         ))}
       </div>
 
-      {/* 🆕 FEATURE 4: ESTILOS EXPANDIDOS */}
+      {/* ESTILOS */}
       <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>🎨 ESTILO VISUAL</label>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:8, marginBottom:22 }}>
         {styles.map(s => (
@@ -247,7 +249,7 @@ function UploadZone({ onStart }) {
         ))}
       </div>
 
-      {/* 🆕 FEATURE 5: UPLOAD DE IMAGEM DE REFERÊNCIA */}
+      {/* IMAGEM DE REFERÊNCIA */}
       <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>👤 IMAGEM DE REFERÊNCIA (Opcional)</label>
       <div
         onClick={() => imageRef.current.click()}
@@ -303,7 +305,7 @@ function UploadZone({ onStart }) {
           duration: duration === 'custom' ? customDur : duration,
           aspectRatio,
           resolution,
-          refImage  // 🆕 Envia imagem de referência
+          refImage
         })}
         style={{
           width:'100%', padding:'15px',
@@ -319,7 +321,6 @@ function UploadZone({ onStart }) {
         {file ? '🎬 Gerar Videoclipe com IA' : 'Selecione um arquivo primeiro'}
       </button>
 
-      {/* INFO DE CUSTO */}
       {file && (
         <div style={{ marginTop:14, padding:'10px 14px', background:'rgba(249,115,22,.05)', border:'1px solid rgba(249,115,22,.15)', borderRadius:10 }}>
           <div style={{ color:'#f97316', fontSize:11, fontWeight:600, marginBottom:3 }}>💰 CUSTO ESTIMADO</div>
@@ -333,7 +334,7 @@ function UploadZone({ onStart }) {
   )
 }
 
-// ─── LEFT PANEL (Mesmo código) ────────────────────────────────
+// ─── LEFT PANEL ───────────────────────────────────────────────
 function LeftPanel({ fileName, jobStatus, onReset }) {
   const steps = ['plan', 'analyzing', 'creative', 'scenes', 'segments', 'merge']
   const stepLabels = {
@@ -399,7 +400,7 @@ function LeftPanel({ fileName, jobStatus, onReset }) {
   )
 }
 
-// ─── SCENE IMAGE (Mesmo código) ───────────────────────────────
+// ─── SCENE IMAGE ──────────────────────────────────────────────
 function SceneImage({ scene, index }) {
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState(false)
@@ -461,7 +462,7 @@ function SceneImage({ scene, index }) {
   )
 }
 
-// ─── CREATIVE CONCEPT (Mesmo código) ──────────────────────────
+// ─── CREATIVE CONCEPT ─────────────────────────────────────────
 function CreativeConceptCard({ concept }) {
   if (!concept) return null
   
@@ -494,7 +495,7 @@ function CreativeConceptCard({ concept }) {
   )
 }
 
-// ─── SCENES GRID (Mesmo código) ───────────────────────────────
+// ─── SCENES GRID ──────────────────────────────────────────────
 function ScenesGrid({ scenes }) {
   if (!scenes || scenes.length === 0) return null
   
@@ -532,12 +533,32 @@ function ScenesGrid({ scenes }) {
 
 // ─── MAIN DASHBOARD ───────────────────────────────────────────
 export default function Dashboard({ onBack }) {
-  const [phase, setPhase]       = useState('upload')
-  const [credits, setCredits]   = useState(500)
-  const [jobId, setJobId]       = useState(null)
+  const [phase, setPhase]         = useState('upload')
+  const [credits, setCredits]     = useState(500)
+  const [jobId, setJobId]         = useState(null)
   const [jobStatus, setJobStatus] = useState(null)
-  const [fileName, setFileName] = useState('')
-  const pollRef                 = useRef()
+  const [fileName, setFileName]   = useState('')
+  const [serverReady, setServerReady] = useState(false)  // ✅ CORREÇÃO 1
+  const pollRef                   = useRef()
+
+  // ✅ CORREÇÃO 1: Wake-up automático ao carregar a página
+  useEffect(() => {
+    const wakeUpServer = async () => {
+      try {
+        console.log('🔄 Verificando servidor...')
+        const res = await fetch(`${API_URL}/api/health`)
+        if (res.ok) {
+          console.log('✅ Servidor online!')
+          setServerReady(true)
+        }
+      } catch (e) {
+        console.log('⚠️ Servidor iniciando, aguarde...')
+        // Tenta novamente após 5 segundos
+        setTimeout(wakeUpServer, 5000)
+      }
+    }
+    wakeUpServer()
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -555,32 +576,82 @@ export default function Dashboard({ onBack }) {
       formData.append('audio', file)
       formData.append('description', desc)
       formData.append('style', style)
-      formData.append('duration', duration)               // 🆕 Duration
-      formData.append('aspect_ratio', aspectRatio)        // 🆕 Aspect Ratio
-      formData.append('resolution', resolution)           // 🆕 Resolution
-      if (refImage) formData.append('ref_image', refImage) // 🆕 Reference Image
+      formData.append('duration', String(duration))
+      formData.append('aspect_ratio', aspectRatio)
+      formData.append('resolution', resolution)
+      if (refImage) formData.append('ref_image', refImage)
 
-      const response = await fetch(`${API_URL}/api/videos/generate`, {
-        method: 'POST',
-        body: formData
-      })
+      // ✅ CORREÇÃO 2: AbortController com timeout de 90 segundos
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 90000)
+
+      let response
+      try {
+        response = await fetch(`${API_URL}/api/videos/generate`, {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal
+        })
+        clearTimeout(timeoutId)
+      } catch (fetchErr) {
+        clearTimeout(timeoutId)
+        if (fetchErr.name === 'AbortError') {
+          alert('O servidor demorou para responder (timeout). O servidor pode estar iniciando — aguarde 30 segundos e tente novamente.')
+        } else {
+          alert('Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente.')
+        }
+        setPhase('upload')
+        return
+      }
+
+      // ✅ CORREÇÃO 2: Verificar status HTTP antes de parsear JSON
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '')
+        console.error(`Erro HTTP ${response.status}:`, errorText)
+
+        if (response.status === 504) {
+          alert('Servidor em cold start. Aguarde 30 segundos e tente novamente.')
+        } else if (response.status === 400) {
+          alert('Arquivo inválido. Verifique se o arquivo de áudio é válido.')
+        } else {
+          alert(`Erro ao iniciar geração (${response.status}). Tente novamente.`)
+        }
+        setPhase('upload')
+        return
+      }
 
       const data = await response.json()
+
+      if (!data.job_id) {
+        alert('Resposta inesperada do servidor. Tente novamente.')
+        setPhase('upload')
+        return
+      }
+
       setJobId(data.job_id)
 
+      // Polling de status
       pollRef.current = setInterval(async () => {
-        const statusRes = await fetch(`${API_URL}/api/videos/status/${data.job_id}`)
-        const status = await statusRes.json()
-        setJobStatus(status)
+        try {
+          const statusRes = await fetch(`${API_URL}/api/videos/status/${data.job_id}`)
+          if (!statusRes.ok) return
+          const status = await statusRes.json()
+          setJobStatus(status)
 
-        if (status.status === 'completed' || status.status === 'failed') {
-          clearInterval(pollRef.current)
+          if (status.status === 'completed' || status.status === 'failed') {
+            clearInterval(pollRef.current)
+            if (status.status === 'failed') {
+              alert(`Geração falhou: ${status.error_message || 'Erro desconhecido'}`)
+            }
+          }
+        } catch (pollErr) {
+          console.warn('Erro no polling:', pollErr)
         }
       }, 2000)
 
     } catch (error) {
-      console.error('Error:', error)
-      alert('Erro ao iniciar geração. Tente novamente.')
+      console.error('Erro inesperado:', error)
+      alert('Erro inesperado. Tente novamente.')
       setPhase('upload')
     }
   }
@@ -598,6 +669,18 @@ export default function Dashboard({ onBack }) {
       <div style={{ fontFamily:"'DM Sans',sans-serif", background:'#0a0a0e', color:'#fff', minHeight:'100vh' }}>
         <style>{CSS}</style>
         <Navbar onBack={onBack} credits={credits} />
+
+        {/* ✅ CORREÇÃO 1: Banner de status do servidor */}
+        {!serverReady && (
+          <div style={{
+            background:'rgba(249,115,22,.08)', borderBottom:'1px solid rgba(249,115,22,.2)',
+            padding:'10px 24px', textAlign:'center', display:'flex', alignItems:'center', justifyContent:'center', gap:8
+          }}>
+            <div style={{ width:12, height:12, border:'2px solid rgba(249,115,22,.3)', borderTop:'2px solid #f97316', borderRadius:'50%', animation:'spin .8s linear infinite' }} />
+            <span style={{ color:'#f97316', fontSize:12 }}>Conectando ao servidor, aguarde alguns segundos...</span>
+          </div>
+        )}
+
         <UploadZone onStart={startGeneration} />
       </div>
     )
@@ -659,6 +742,21 @@ export default function Dashboard({ onBack }) {
                   borderRadius:10, padding:'11px 26px', fontSize:14, cursor:'pointer'
                 }}>🔄 Novo Vídeo</button>
               </div>
+            </div>
+          )}
+
+          {jobStatus?.status === 'failed' && (
+            <div style={{
+              marginTop:16, background:'rgba(239,68,68,.05)', border:'1px solid rgba(239,68,68,.2)',
+              borderRadius:16, padding:'32px 24px', textAlign:'center', animation:'fadeUp .5s ease'
+            }}>
+              <div style={{ fontSize:36, marginBottom:12 }}>❌</div>
+              <h3 style={{ color:'#ef4444', fontSize:16, fontWeight:600, marginBottom:8 }}>Erro na geração</h3>
+              <p style={{ color:'#6b7280', fontSize:13, marginBottom:20 }}>{jobStatus.error_message || 'Erro desconhecido'}</p>
+              <button onClick={reset} style={{
+                background:'rgba(255,255,255,.06)', color:'#fff', border:'1px solid rgba(255,255,255,.1)',
+                borderRadius:10, padding:'10px 24px', fontSize:14, cursor:'pointer'
+              }}>🔄 Tentar Novamente</button>
             </div>
           )}
         </div>
