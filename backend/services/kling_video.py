@@ -1,6 +1,6 @@
 """
 🎬 ClipVox - Kling Video Generation Service (via PiAPI)
-Solução para rate-limit do R2: faz upload da imagem para PiAPI antes de gerar o vídeo
+Solução para rate-limit do R2: rehosting de imagens via imgbb antes de enviar ao Kling
 """
 
 import os
@@ -10,77 +10,61 @@ import base64
 from typing import Optional
 
 PIAPI_KEY        = os.getenv("PIAPI_API_KEY") or os.getenv("PIAPI_KEY")
+IMGBB_API_KEY    = os.getenv("IMGBB_API_KEY", "")
 PIAPI_BASE       = "https://api.piapi.ai/api/v1/task"
-PIAPI_UPLOAD_URL = "https://api.piapi.ai/api/v1/asset/upload"
 MAX_WAIT_SECONDS = 300
 POLL_INTERVAL    = 5
 
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 0: Baixar imagem do R2 e fazer upload para PiAPI
+# STEP 0: Baixar imagem do R2 e fazer rehost via imgbb
 # ═══════════════════════════════════════════════════════════════
-def upload_image_to_piapi(image_url: str, scene_number: int) -> Optional[str]:
+def rehost_image_imgbb(image_url: str, scene_number: int) -> Optional[str]:
     """
-    Baixa a imagem do R2 e faz upload para a PiAPI.
-    Retorna a URL interna da PiAPI (sem rate-limit) ou None se falhar.
+    Baixa a imagem do R2/Workers e faz upload para imgbb.
+    Retorna a URL pública do imgbb (aceita pelo Kling) ou None se falhar.
     """
-    print(f"   📥 Baixando imagem do R2: {image_url[:80]}")
+    print(f"   📥 Baixando imagem: {image_url[:80]}")
 
     try:
-        # 1. Baixar imagem do R2
         r = requests.get(image_url, timeout=30)
         if r.status_code != 200:
             print(f"   ❌ Falha ao baixar imagem (HTTP {r.status_code})")
             return None
 
-        image_bytes    = r.content
-        content_type   = r.headers.get("Content-Type", "image/jpeg")
-        image_b64      = base64.b64encode(image_bytes).decode("utf-8")
+        image_bytes = r.content
+        image_b64   = base64.b64encode(image_bytes).decode("utf-8")
+        print(f"   ✅ Imagem baixada ({len(image_bytes)//1024}KB)")
 
-        print(f"   ✅ Imagem baixada ({len(image_bytes)//1024}KB, {content_type})")
+        if not IMGBB_API_KEY:
+            print(f"   ❌ IMGBB_API_KEY não configurada")
+            return None
 
-        # 2. Fazer upload para PiAPI
-        headers = {
-            "x-api-key":    PIAPI_KEY,
-            "Content-Type": "application/json"
-        }
-
-        upload_payload = {
-            "file": f"data:{content_type};base64,{image_b64}"
-        }
-
-        print(f"   📤 Fazendo upload para PiAPI...")
-        upload_resp = requests.post(
-            PIAPI_UPLOAD_URL,
-            headers=headers,
-            json=upload_payload,
+        upload_url = f"https://api.imgbb.com/1/upload?key={IMGBB_API_KEY}"
+        resp = requests.post(
+            upload_url,
+            data={"image": image_b64, "name": f"clipvox_scene_{scene_number}"},
             timeout=60
         )
 
-        print(f"   📥 Upload response HTTP {upload_resp.status_code}: {upload_resp.text[:300]}")
+        print(f"   📥 imgbb response HTTP {resp.status_code}: {resp.text[:200]}")
 
-        if upload_resp.status_code not in (200, 201):
-            print(f"   ⚠️ Upload falhou — usando URL original do R2")
+        if resp.status_code != 200:
+            print(f"   ❌ imgbb upload falhou")
             return None
 
-        upload_data = upload_resp.json()
+        data = resp.json()
+        imgbb_url = data.get("data", {}).get("url")
 
-        # Extrair URL do asset
-        piapi_url = (
-            upload_data.get("data", {}).get("url") or
-            upload_data.get("url") or
-            upload_data.get("file_url")
-        )
-
-        if piapi_url:
-            print(f"   ✅ Upload PiAPI OK: {piapi_url[:80]}")
-            return piapi_url
+        if imgbb_url:
+            print(f"   ✅ imgbb URL: {imgbb_url}")
+            return imgbb_url
         else:
-            print(f"   ⚠️ URL não encontrada na resposta: {upload_data}")
+            print(f"   ❌ URL não encontrada na resposta imgbb")
             return None
 
     except Exception as e:
-        print(f"   ⚠️ Erro no upload: {e}")
+        print(f"   ⚠️ Erro no rehost: {e}")
         return None
 
 
@@ -102,17 +86,18 @@ def generate_scene_video(
     if not image_url:
         return _video_error(scene_number, "No image URL provided")
 
-    duration = 5  # Kling aceita 5 ou 10
+    duration = 5
 
     print(f"\n🎬 Gerando vídeo — Cena {scene_number}")
     print(f"   duration: {duration}s | mode: {mode} | aspect_ratio: {aspect_ratio}")
 
-    # ─── Tentar fazer upload da imagem para PiAPI ─────────────
-    # Evita rate-limit do r2.dev quando Kling tenta baixar a imagem
-    piapi_image_url = upload_image_to_piapi(image_url, scene_number)
-    final_image_url = piapi_image_url if piapi_image_url else image_url
+    imgbb_url = rehost_image_imgbb(image_url, scene_number)
 
-    print(f"   🔗 URL final usada: {final_image_url[:80]}")
+    if not imgbb_url:
+        print(f"   ❌ Rehost falhou — abortando cena {scene_number}")
+        return _video_error(scene_number, "Falha no rehost via imgbb")
+
+    print(f"   🔗 URL enviada para Kling: {imgbb_url}")
 
     motion_prompt = _build_motion_prompt(prompt, scene_number)
 
@@ -126,7 +111,7 @@ def generate_scene_video(
         "task_type": "video_generation",
         "input": {
             "prompt":       motion_prompt,
-            "image_url":    final_image_url,
+            "image_url":    imgbb_url,
             "duration":     duration,
             "aspect_ratio": aspect_ratio,
             "mode":         mode
@@ -150,12 +135,10 @@ def generate_scene_video(
         data      = response.json()
         task_data = data.get("data", data)
 
-        # ─── Checar falha imediata na task ────────────────────
         if task_data.get("status") in ("failed", "error"):
             err     = task_data.get("error", {})
             err_msg = err.get("message") if isinstance(err, dict) else str(err)
             print(f"❌ Task falhou na criação: {err_msg}")
-            print(f"   Detalhes: {task_data}")
             return _video_error(scene_number, f"Task failed: {err_msg}")
 
         task_id = task_data.get("task_id") or data.get("task_id") or data.get("id")
