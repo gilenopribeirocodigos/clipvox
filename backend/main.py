@@ -1,7 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 import os
 from config import UPLOAD_DIR
 from database import init_db
@@ -19,11 +19,26 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, especificar domínios
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ✅ CORREÇÃO 3: Exception handler global que inclui headers CORS
+# Sem isso, erros 500/504 retornam sem Access-Control-Allow-Origin
+# e o browser reporta CORS em vez do erro real
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc), "error": "Internal server error"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 
 # Import routes
 from routes import videos
@@ -42,7 +57,7 @@ async def serve_file(filename: str):
     file_path = os.path.join(UPLOAD_DIR, filename)
     if os.path.exists(file_path):
         return FileResponse(file_path)
-    return {"error": "File not found"}, 404
+    return JSONResponse(status_code=404, content={"error": "File not found"})
 
 # Initialize database on startup
 @app.on_event("startup")
