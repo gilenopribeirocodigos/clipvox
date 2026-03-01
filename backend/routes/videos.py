@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from typing import Optional
 import os
 import uuid
@@ -10,10 +10,10 @@ from services.scene_calculator import calculate_cinematic_scenes, get_scene_summ
 from services.ai_concept import generate_creative_concept_with_prompts
 from services.video_generation import generate_scenes_batch
 from services.kling_video import generate_videos_batch
-from services.merge_video import merge_clips_with_audio
+from services.merge_video import merge_clips_with_audio, MERGE_OUTPUT_DIR
 
-router = APIRouter()
-jobs_db = {}
+router   = APIRouter()
+jobs_db  = {}
 
 
 def get_virtual_duration(duration: str) -> int:
@@ -28,6 +28,9 @@ def get_virtual_duration(duration: str) -> int:
         return None
 
 
+# ═══════════════════════════════════════════════════════════════
+# POST /generate
+# ═══════════════════════════════════════════════════════════════
 @router.post("/generate")
 async def generate_video(
     audio:        UploadFile      = File(...),
@@ -96,6 +99,9 @@ async def generate_video(
     }
 
 
+# ═══════════════════════════════════════════════════════════════
+# GET /status/{job_id}
+# ═══════════════════════════════════════════════════════════════
 @router.get("/status/{job_id}")
 async def get_job_status(job_id: str):
     if job_id not in jobs_db:
@@ -128,6 +134,9 @@ async def get_job_status(job_id: str):
     }
 
 
+# ═══════════════════════════════════════════════════════════════
+# POST /generate-clips/{job_id}
+# ═══════════════════════════════════════════════════════════════
 @router.post("/generate-clips/{job_id}")
 async def generate_video_clips(
     job_id:           str,
@@ -147,7 +156,6 @@ async def generate_video_clips(
     jobs_db[job_id]["videos_status"] = "processing"
     jobs_db[job_id]["video_clips"]   = None
     background_tasks.add_task(process_video_clips, job_id=job_id, mode=mode)
-    bpm = job.get("audio_bpm", 120)
     total_scenes = len([s for s in scenes if s.get("success", False)])
     return {
         "job_id":         job_id,
@@ -159,7 +167,7 @@ async def generate_video_clips(
 
 
 # ═══════════════════════════════════════════════════════════════
-# ✅ NOVO — POST /merge/{job_id}
+# POST /merge/{job_id}
 # ═══════════════════════════════════════════════════════════════
 @router.post("/merge/{job_id}")
 async def merge_final_video(job_id: str, background_tasks: BackgroundTasks):
@@ -169,7 +177,7 @@ async def merge_final_video(job_id: str, background_tasks: BackgroundTasks):
     if job.get("videos_status") != "completed":
         raise HTTPException(400, "Clipes ainda não gerados. Gere os clipes primeiro.")
     video_clips = job.get("video_clips", [])
-    successful = [c for c in video_clips if c.get("success") and c.get("video_url")]
+    successful  = [c for c in video_clips if c.get("success") and c.get("video_url")]
     if not successful:
         raise HTTPException(400, "Nenhum clipe disponível para merge")
     if job.get("merge_status") == "processing":
@@ -178,15 +186,37 @@ async def merge_final_video(job_id: str, background_tasks: BackgroundTasks):
     jobs_db[job_id]["merge_url"]    = None
     background_tasks.add_task(process_merge, job_id)
     return {
-        "job_id":   job_id,
-        "status":   "processing",
-        "message":  f"Iniciando merge de {len(successful)} clipes + áudio...",
-        "clips":    len(successful)
+        "job_id":  job_id,
+        "status":  "processing",
+        "message": f"Iniciando merge de {len(successful)} clipes + áudio...",
+        "clips":   len(successful)
     }
 
 
 # ═══════════════════════════════════════════════════════════════
-# BACKGROUND TASK — pipeline de imagens
+# GET /download/{job_id}  ← FALLBACK quando R2 não está disponível
+# ═══════════════════════════════════════════════════════════════
+@router.get("/download/{job_id}")
+async def download_merged_video(job_id: str):
+    if job_id not in jobs_db:
+        raise HTTPException(404, "Job not found")
+    job = jobs_db[job_id]
+    if job.get("merge_status") != "completed":
+        raise HTTPException(400, "Merge ainda não concluído")
+
+    local_path = os.path.join(MERGE_OUTPUT_DIR, f"final_{job_id}.mp4")
+    if not os.path.exists(local_path):
+        raise HTTPException(404, "Arquivo de merge não encontrado")
+
+    return FileResponse(
+        path=local_path,
+        media_type="video/mp4",
+        filename=f"clipvox_{job_id}.mp4"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
+# BACKGROUND TASKS
 # ═══════════════════════════════════════════════════════════════
 def process_video_pipeline(job_id: str):
     job = jobs_db[job_id]
@@ -240,7 +270,8 @@ def process_video_pipeline(job_id: str):
         time.sleep(1)
         update_job(job_id, progress=98, current_step="final")
         print(f"✅ Pipeline concluído: {job_id}")
-        update_job(job_id, status="completed", progress=100, current_step="done", output_file=f"video_{job_id}.mp4", videos_status="ready")
+        update_job(job_id, status="completed", progress=100, current_step="done",
+                   output_file=f"video_{job_id}.mp4", videos_status="ready")
     except Exception as e:
         print(f"❌ Erro no job {job_id}: {e}")
         import traceback; traceback.print_exc()
@@ -270,9 +301,6 @@ def process_video_clips(job_id: str, mode: str = "std"):
         jobs_db[job_id]["videos_error"]  = str(e)
 
 
-# ═══════════════════════════════════════════════════════════════
-# ✅ NOVO — BACKGROUND TASK: merge final
-# ═══════════════════════════════════════════════════════════════
 def process_merge(job_id: str):
     job = jobs_db.get(job_id)
     if not job:
@@ -287,24 +315,25 @@ def process_merge(job_id: str):
         audio_path = job.get("audio_path")
         print(f"\n🎬 Merge: {len(video_urls)} clipes + áudio")
 
-        # Tentar importar config R2
-        try:
-            from config import R2_CLIENT, R2_BUCKET_NAME, R2_PUBLIC_URL
-        except ImportError:
-            R2_CLIENT = R2_BUCKET_NAME = R2_PUBLIC_URL = None
-
         result = merge_clips_with_audio(
-            video_urls    = video_urls,
-            audio_path    = audio_path,
-            job_id        = job_id,
-            r2_client     = R2_CLIENT,
-            r2_bucket_name = R2_BUCKET_NAME,
-            r2_public_url  = R2_PUBLIC_URL
+            video_urls=video_urls,
+            audio_path=audio_path,
+            job_id=job_id
         )
+
         if result["success"]:
             jobs_db[job_id]["merge_status"] = "completed"
-            jobs_db[job_id]["merge_url"]    = result.get("output_url")
-            print(f"✅ Merge concluído: {result.get('output_url')}")
+
+            # Prioridade: URL do R2; fallback: endpoint de download local
+            if result.get("output_url"):
+                jobs_db[job_id]["merge_url"] = result["output_url"]
+                print(f"✅ Merge concluído (R2): {result['output_url']}")
+            else:
+                # Gera URL do endpoint de download deste servidor
+                backend_url = os.getenv("BACKEND_URL", "https://clipvox-backend.onrender.com")
+                download_url = f"{backend_url}/api/videos/download/{job_id}"
+                jobs_db[job_id]["merge_url"] = download_url
+                print(f"✅ Merge concluído (download local): {download_url}")
         else:
             jobs_db[job_id]["merge_status"] = "failed"
             jobs_db[job_id]["merge_error"]  = result.get("error")
