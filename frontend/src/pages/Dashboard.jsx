@@ -252,13 +252,11 @@ function SceneImage({ scene, index }) {
 function VideoClipCard({ clip, index }) {
   const [playing, setPlaying] = useState(false)
   const videoRef = useRef()
-
   const togglePlay = () => {
     if (!videoRef.current) return
     if (playing) { videoRef.current.pause(); setPlaying(false) }
     else { videoRef.current.play(); setPlaying(true) }
   }
-
   if (!clip.success || !clip.video_url) {
     return (
       <div style={{ background:'rgba(239,68,68,.05)', border:'1px solid rgba(239,68,68,.15)', borderRadius:12, padding:'16px', textAlign:'center', animation:`fadeUp .4s ease ${index*0.06}s both` }}>
@@ -268,7 +266,6 @@ function VideoClipCard({ clip, index }) {
       </div>
     )
   }
-
   return (
     <div style={{ background:'rgba(16,16,24,.9)', border:'1px solid rgba(255,255,255,.08)', borderRadius:12, overflow:'hidden', animation:`fadeUp .4s ease ${index*0.06}s both`, transition:'all .25s' }}
       onMouseEnter={e => e.currentTarget.style.borderColor='rgba(249,115,22,.35)'}
@@ -293,7 +290,8 @@ function VideoClipCard({ clip, index }) {
   )
 }
 
-function VideoClipsPanel({ jobId, jobStatus, onVideosGenerated }) {
+// ✅ FIX: VideoClipsPanel recebe onVideosCompleted para avisar o Dashboard
+function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
   const [videosStatus, setVideosStatus] = useState(null)
   const [videoClips,   setVideoClips]   = useState(null)
   const [klingMode,    setKlingMode]    = useState('std')
@@ -318,7 +316,8 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosGenerated }) {
           if (status.videos_status === 'completed' || status.videos_status === 'failed') {
             clearInterval(pollRef.current)
             setGenerating(false)
-            if (onVideosGenerated) onVideosGenerated(status.video_clips)
+            // ✅ Notifica o Dashboard que os vídeos foram concluídos
+            if (onVideosCompleted) onVideosCompleted(status.video_clips)
           }
         } catch(e) { console.warn('Polling vídeos:', e) }
       }, 4000)
@@ -341,11 +340,11 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosGenerated }) {
     }
   }
 
-  const scenes       = jobStatus?.scenes || []
-  const validScenes  = scenes.filter(s => s.success)
-  const totalClips   = validScenes.length
+  const scenes        = jobStatus?.scenes || []
+  const validScenes   = scenes.filter(s => s.success)
+  const totalClips    = validScenes.length
   const estimatedCost = (totalClips * (klingMode === 'std' ? 0.14 : 0.28)).toFixed(2)
-  const successClips = videoClips?.filter(c => c.success) || []
+  const successClips  = videoClips?.filter(c => c.success) || []
 
   return (
     <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:24, marginTop:16, animation:'fadeUp .5s ease' }}>
@@ -423,18 +422,12 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosGenerated }) {
   )
 }
 
-// ─── ✅ MERGE PANEL ───────────────────────────────────────────
-function MergePanel({ jobId, jobStatus, videoClips }) {
+function MergePanel({ jobId, videoClips }) {
   const [mergeStatus, setMergeStatus] = useState(null)
   const [mergeUrl,    setMergeUrl]    = useState(null)
   const [mergeError,  setMergeError]  = useState(null)
   const [loading,     setLoading]     = useState(false)
   const pollRef = useRef()
-
-  useEffect(() => {
-    if (jobStatus?.merge_status) setMergeStatus(jobStatus.merge_status)
-    if (jobStatus?.merge_url)    setMergeUrl(jobStatus.merge_url)
-  }, [jobStatus])
 
   useEffect(() => {
     if (mergeStatus === 'processing') {
@@ -596,6 +589,8 @@ export default function Dashboard({ onBack }) {
   const [jobStatus, setJobStatus] = useState(null)
   const [fileName, setFileName]   = useState('')
   const [serverReady, setServerReady] = useState(false)
+  // ✅ FIX: estado local para controlar exibição do MergePanel
+  const [completedClips, setCompletedClips] = useState(null)
   const pollRef = useRef()
 
   useEffect(() => {
@@ -614,6 +609,7 @@ export default function Dashboard({ onBack }) {
   const startGeneration = async ({ file, desc, style, duration, aspectRatio, resolution, refImage }) => {
     try {
       setFileName(file.name); setPhase('processing'); setCredits(c => c - 100)
+      setCompletedClips(null)
       const formData = new FormData()
       formData.append('audio', file)
       formData.append('description', desc)
@@ -666,7 +662,14 @@ export default function Dashboard({ onBack }) {
 
   const reset = () => {
     if (pollRef.current) clearInterval(pollRef.current)
-    setPhase('upload'); setJobId(null); setJobStatus(null); setFileName('')
+    setPhase('upload'); setJobId(null); setJobStatus(null); setFileName(''); setCompletedClips(null)
+  }
+
+  // ✅ FIX: callback chamado pelo VideoClipsPanel quando termina
+  const handleVideosCompleted = (clips) => {
+    if (clips && clips.some(c => c.success)) {
+      setCompletedClips(clips)
+    }
   }
 
   if (phase === 'upload') {
@@ -715,13 +718,13 @@ export default function Dashboard({ onBack }) {
               <VideoClipsPanel
                 jobId={jobId}
                 jobStatus={jobStatus}
-                onVideosGenerated={(clips) => console.log('Vídeos prontos:', clips?.length)}
+                onVideosCompleted={handleVideosCompleted}
               />
-              {jobStatus?.videos_status === 'completed' && jobStatus?.video_clips?.some(c => c.success) && (
+              {/* ✅ FIX: aparece quando completedClips é setado pelo callback */}
+              {completedClips && completedClips.some(c => c.success) && (
                 <MergePanel
                   jobId={jobId}
-                  jobStatus={jobStatus}
-                  videoClips={jobStatus.video_clips}
+                  videoClips={completedClips}
                 />
               )}
             </>
