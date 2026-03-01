@@ -249,7 +249,6 @@ function SceneImage({ scene, index }) {
   )
 }
 
-// ─── ✅ NOVO: Video Clip Card ──────────────────────────────────
 function VideoClipCard({ clip, index }) {
   const [playing, setPlaying] = useState(false)
   const videoRef = useRef()
@@ -274,35 +273,14 @@ function VideoClipCard({ clip, index }) {
     <div style={{ background:'rgba(16,16,24,.9)', border:'1px solid rgba(255,255,255,.08)', borderRadius:12, overflow:'hidden', animation:`fadeUp .4s ease ${index*0.06}s both`, transition:'all .25s' }}
       onMouseEnter={e => e.currentTarget.style.borderColor='rgba(249,115,22,.35)'}
       onMouseLeave={e => e.currentTarget.style.borderColor='rgba(255,255,255,.08)'}>
-      
-      {/* Player de vídeo */}
       <div style={{ position:'relative', background:'#000', cursor:'pointer' }} onClick={togglePlay}>
-        <video
-          ref={videoRef}
-          src={clip.video_url}
-          loop
-          muted
-          playsInline
-          style={{ width:'100%', display:'block', maxHeight:140, objectFit:'cover' }}
-          onEnded={() => setPlaying(false)}
-        />
-        {/* Overlay play/pause */}
+        <video ref={videoRef} src={clip.video_url} loop muted playsInline style={{ width:'100%', display:'block', maxHeight:140, objectFit:'cover' }} onEnded={() => setPlaying(false)} />
         <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', background: playing ? 'transparent' : 'rgba(0,0,0,.4)', transition:'background .2s' }}>
-          {!playing && (
-            <div style={{ width:38, height:38, borderRadius:'50%', background:'rgba(249,115,22,.9)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:14 }}>▶</div>
-          )}
+          {!playing && (<div style={{ width:38, height:38, borderRadius:'50%', background:'rgba(249,115,22,.9)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:14 }}>▶</div>)}
         </div>
-        {/* Badge cena */}
-        <div style={{ position:'absolute', top:6, left:6, background:'rgba(0,0,0,.75)', borderRadius:4, padding:'2px 7px', fontSize:9, color:'#fff', fontWeight:600 }}>
-          CENA {clip.scene_number}
-        </div>
-        {/* Badge duração */}
-        <div style={{ position:'absolute', top:6, right:6, background:'rgba(249,115,22,.8)', borderRadius:4, padding:'2px 7px', fontSize:9, color:'#fff', fontWeight:600 }}>
-          {clip.duration}s
-        </div>
+        <div style={{ position:'absolute', top:6, left:6, background:'rgba(0,0,0,.75)', borderRadius:4, padding:'2px 7px', fontSize:9, color:'#fff', fontWeight:600 }}>CENA {clip.scene_number}</div>
+        <div style={{ position:'absolute', top:6, right:6, background:'rgba(249,115,22,.8)', borderRadius:4, padding:'2px 7px', fontSize:9, color:'#fff', fontWeight:600 }}>{clip.duration}s</div>
       </div>
-
-      {/* Info */}
       <div style={{ padding:'10px 12px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
         <div style={{ color:'#9ca3af', fontSize:10 }}>Kling AI · {clip.mode === 'pro' ? '⭐ Pro' : 'Standard'}</div>
         <a href={clip.video_url} download={`cena_${clip.scene_number}.mp4`} target="_blank" rel="noreferrer"
@@ -315,26 +293,20 @@ function VideoClipCard({ clip, index }) {
   )
 }
 
-// ─── ✅ NOVO: Painel de vídeos Kling ──────────────────────────
 function VideoClipsPanel({ jobId, jobStatus, onVideosGenerated }) {
-  const [videosStatus,  setVideosStatus]  = useState(null)   // null | processing | completed | failed
-  const [videoClips,    setVideoClips]    = useState(null)
-  const [klingMode,     setKlingMode]     = useState('std')
-  const [generating,    setGenerating]    = useState(false)
-  const [error,         setError]         = useState(null)
+  const [videosStatus, setVideosStatus] = useState(null)
+  const [videoClips,   setVideoClips]   = useState(null)
+  const [klingMode,    setKlingMode]    = useState('std')
+  const [generating,   setGenerating]   = useState(false)
+  const [error,        setError]        = useState(null)
   const pollRef = useRef()
 
-  // Sincronizar com jobStatus — só sobrescreve se o status for relevante
   useEffect(() => {
     const s = jobStatus?.videos_status
-    // "ready" e "pending" = ainda não gerou → deixa como null para mostrar botão
-    if (s === 'processing' || s === 'completed' || s === 'failed') {
-      setVideosStatus(s)
-    }
+    if (s === 'processing' || s === 'completed' || s === 'failed') setVideosStatus(s)
     if (jobStatus?.video_clips) setVideoClips(jobStatus.video_clips)
   }, [jobStatus])
 
-  // Polling quando em processamento
   useEffect(() => {
     if (videosStatus === 'processing') {
       pollRef.current = setInterval(async () => {
@@ -356,46 +328,27 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosGenerated }) {
 
   const handleGenerate = async () => {
     if (generating) return
-    setGenerating(true)
-    setError(null)
-    setVideosStatus('processing')
-
+    setGenerating(true); setError(null); setVideosStatus('processing')
     try {
       const controller = new AbortController()
       const tid = setTimeout(() => controller.abort(), 30000)
-
-      const res = await fetch(`${API_URL}/api/videos/generate-clips/${jobId}?mode=${klingMode}`, {
-        method: 'POST',
-        signal: controller.signal
-      })
+      const res = await fetch(`${API_URL}/api/videos/generate-clips/${jobId}?mode=${klingMode}`, { method:'POST', signal:controller.signal })
       clearTimeout(tid)
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err.detail || `Erro ${res.status}`)
-      }
-
-      const data = await res.json()
-      console.log('✅ Geração Kling iniciada:', data)
-
-    } catch (err) {
-      console.error('Erro ao iniciar geração Kling:', err)
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `Erro ${res.status}`) }
+    } catch(err) {
       setError(err.message || 'Erro ao iniciar geração de vídeos')
-      setGenerating(false)
-      setVideosStatus(null)
+      setGenerating(false); setVideosStatus(null)
     }
   }
 
-  const scenes        = jobStatus?.scenes || []
-  const validScenes   = scenes.filter(s => s.success)
-  const totalClips    = validScenes.length
+  const scenes       = jobStatus?.scenes || []
+  const validScenes  = scenes.filter(s => s.success)
+  const totalClips   = validScenes.length
   const estimatedCost = (totalClips * (klingMode === 'std' ? 0.14 : 0.28)).toFixed(2)
-  const successClips  = videoClips?.filter(c => c.success) || []
+  const successClips = videoClips?.filter(c => c.success) || []
 
   return (
     <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:24, marginTop:16, animation:'fadeUp .5s ease' }}>
-      
-      {/* Header */}
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20 }}>
         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
           <span style={{ fontSize:20 }}>🎬</span>
@@ -411,10 +364,8 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosGenerated }) {
         )}
       </div>
 
-      {/* Estado: aguardando clique — mostra botão para status null, "pending" ou "ready" */}
       {(!videosStatus || videosStatus === 'pending' || videosStatus === 'ready') && (
         <>
-          {/* Seletor modo std/pro */}
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:16 }}>
             {[
               { value:'std', label:'Standard', price:'~$0.14/clipe', desc:'Bom para testes' },
@@ -428,8 +379,6 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosGenerated }) {
               </div>
             ))}
           </div>
-
-          {/* Info custo */}
           <div style={{ background:'rgba(249,115,22,.05)', border:'1px solid rgba(249,115,22,.12)', borderRadius:10, padding:'10px 14px', marginBottom:16, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
             <div>
               <div style={{ color:'#f97316', fontSize:11, fontWeight:600 }}>💰 CUSTO ESTIMADO</div>
@@ -437,49 +386,152 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosGenerated }) {
             </div>
             <div style={{ color:'#4b5563', fontSize:11 }}>{totalClips} imagens prontas</div>
           </div>
-
-          {error && (
-            <div style={{ background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.2)', borderRadius:8, padding:'10px 14px', marginBottom:16, color:'#ef4444', fontSize:12 }}>
-              ❌ {error}
-            </div>
-          )}
-
+          {error && (<div style={{ background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.2)', borderRadius:8, padding:'10px 14px', marginBottom:16, color:'#ef4444', fontSize:12 }}>❌ {error}</div>)}
           <button onClick={handleGenerate}
-            style={{ width:'100%', padding:'13px', background:'linear-gradient(135deg,#f97316,#ea580c)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer', boxShadow:'0 4px 18px rgba(249,115,22,.3)', transition:'all .25s' }}
-            onMouseEnter={e => e.target.style.boxShadow='0 6px 24px rgba(249,115,22,.5)'}
-            onMouseLeave={e => e.target.style.boxShadow='0 4px 18px rgba(249,115,22,.3)'}>
+            style={{ width:'100%', padding:'13px', background:'linear-gradient(135deg,#f97316,#ea580c)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer', boxShadow:'0 4px 18px rgba(249,115,22,.3)', transition:'all .25s' }}>
             🎬 Gerar {totalClips} Clipes de Vídeo com Kling AI
           </button>
         </>
       )}
 
-      {/* Estado: processando */}
       {videosStatus === 'processing' && (
         <div style={{ textAlign:'center', padding:'32px 0' }}>
           <div style={{ width:44, height:44, margin:'0 auto 16px', border:'3px solid rgba(249,115,22,.2)', borderTop:'3px solid #f97316', borderRadius:'50%', animation:'spin .9s linear infinite' }} />
           <div style={{ color:'#fff', fontSize:14, fontWeight:600, marginBottom:6 }}>Gerando clipes com Kling AI...</div>
           <div style={{ color:'#6b7280', fontSize:12 }}>Cada clipe leva ~1-3 minutos • Aguarde</div>
-          <div style={{ marginTop:12, color:'#f97316', fontSize:11, animation:'pulse 1.5s ease infinite' }}>
-            ⏳ Processando {totalClips} cenas em paralelo
-          </div>
+          <div style={{ marginTop:12, color:'#f97316', fontSize:11, animation:'pulse 1.5s ease infinite' }}>⏳ Processando {totalClips} cenas</div>
         </div>
       )}
 
-      {/* Estado: concluído — exibir grade de vídeos */}
       {videosStatus === 'completed' && videoClips && (
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(160px,1fr))', gap:12, marginTop:4 }}>
-          {videoClips.map((clip, i) => (
-            <VideoClipCard key={clip.scene_number || i} clip={clip} index={i} />
-          ))}
+          {videoClips.map((clip, i) => (<VideoClipCard key={clip.scene_number || i} clip={clip} index={i} />))}
         </div>
       )}
 
-      {/* Estado: falhou */}
       {videosStatus === 'failed' && (
         <div style={{ textAlign:'center', padding:'24px' }}>
           <div style={{ fontSize:32, marginBottom:10 }}>❌</div>
           <div style={{ color:'#ef4444', fontSize:14, fontWeight:600, marginBottom:8 }}>Erro ao gerar clipes</div>
           <button onClick={() => { setVideosStatus(null); setError(null) }}
+            style={{ background:'rgba(255,255,255,.06)', color:'#fff', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'8px 20px', fontSize:13, cursor:'pointer' }}>
+            🔄 Tentar novamente
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── ✅ MERGE PANEL ───────────────────────────────────────────
+function MergePanel({ jobId, jobStatus, videoClips }) {
+  const [mergeStatus, setMergeStatus] = useState(null)
+  const [mergeUrl,    setMergeUrl]    = useState(null)
+  const [mergeError,  setMergeError]  = useState(null)
+  const [loading,     setLoading]     = useState(false)
+  const pollRef = useRef()
+
+  useEffect(() => {
+    if (jobStatus?.merge_status) setMergeStatus(jobStatus.merge_status)
+    if (jobStatus?.merge_url)    setMergeUrl(jobStatus.merge_url)
+  }, [jobStatus])
+
+  useEffect(() => {
+    if (mergeStatus === 'processing') {
+      pollRef.current = setInterval(async () => {
+        try {
+          const res    = await fetch(`${API_URL}/api/videos/status/${jobId}`)
+          const status = await res.json()
+          if (status.merge_status) setMergeStatus(status.merge_status)
+          if (status.merge_url)    setMergeUrl(status.merge_url)
+          if (status.merge_status === 'completed' || status.merge_status === 'failed') {
+            clearInterval(pollRef.current)
+            setLoading(false)
+            if (status.merge_status === 'failed') setMergeError('Merge falhou. Tente novamente.')
+          }
+        } catch(e) { console.warn('Polling merge:', e) }
+      }, 4000)
+    }
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [mergeStatus, jobId])
+
+  const successClips = (videoClips || []).filter(c => c.success && c.video_url)
+
+  const handleMerge = async () => {
+    if (loading) return
+    setLoading(true); setMergeError(null); setMergeStatus('processing')
+    try {
+      const res = await fetch(`${API_URL}/api/videos/merge/${jobId}`, { method:'POST' })
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `Erro ${res.status}`) }
+    } catch(err) {
+      setMergeError(err.message || 'Erro ao iniciar merge')
+      setLoading(false); setMergeStatus(null)
+    }
+  }
+
+  return (
+    <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(34,197,94,.15)', borderRadius:16, padding:24, marginTop:16, animation:'fadeUp .5s ease' }}>
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
+        <span style={{ fontSize:20 }}>🎞️</span>
+        <div>
+          <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:15, letterSpacing:2, color:'#fff' }}>MERGE FINAL</div>
+          <div style={{ color:'#6b7280', fontSize:11, marginTop:1 }}>Unir {successClips.length} clipes + áudio original</div>
+        </div>
+      </div>
+
+      {(!mergeStatus || mergeStatus === 'idle') && (
+        <>
+          <div style={{ background:'rgba(34,197,94,.05)', border:'1px solid rgba(34,197,94,.12)', borderRadius:10, padding:'12px 16px', marginBottom:16 }}>
+            <div style={{ color:'#22c55e', fontSize:12, fontWeight:600, marginBottom:4 }}>📋 O que será feito:</div>
+            <div style={{ color:'#9ca3af', fontSize:12, lineHeight:1.8 }}>
+              ✅ {successClips.length} clipes concatenados em ordem<br/>
+              🎵 Áudio original da música adicionado<br/>
+              📦 Vídeo final exportado em MP4
+            </div>
+          </div>
+          {mergeError && (<div style={{ background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.2)', borderRadius:8, padding:'10px 14px', marginBottom:16, color:'#ef4444', fontSize:12 }}>❌ {mergeError}</div>)}
+          <button onClick={handleMerge}
+            style={{ width:'100%', padding:'14px', background:'linear-gradient(135deg,#22c55e,#16a34a)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer', boxShadow:'0 4px 18px rgba(34,197,94,.3)', transition:'all .25s' }}
+            onMouseEnter={e => e.target.style.boxShadow='0 6px 24px rgba(34,197,94,.5)'}
+            onMouseLeave={e => e.target.style.boxShadow='0 4px 18px rgba(34,197,94,.3)'}>
+            🎬 Gerar Videoclipe Final
+          </button>
+        </>
+      )}
+
+      {mergeStatus === 'processing' && (
+        <div style={{ textAlign:'center', padding:'32px 0' }}>
+          <div style={{ width:44, height:44, margin:'0 auto 16px', border:'3px solid rgba(34,197,94,.2)', borderTop:'3px solid #22c55e', borderRadius:'50%', animation:'spin .9s linear infinite' }} />
+          <div style={{ color:'#fff', fontSize:14, fontWeight:600, marginBottom:6 }}>Gerando videoclipe final...</div>
+          <div style={{ color:'#6b7280', fontSize:12 }}>Concatenando clipes e adicionando áudio</div>
+          <div style={{ marginTop:10, color:'#22c55e', fontSize:11, animation:'pulse 1.5s ease infinite' }}>⏳ Isso pode levar 2-5 minutos</div>
+        </div>
+      )}
+
+      {mergeStatus === 'completed' && mergeUrl && (
+        <div style={{ textAlign:'center', padding:'16px 0' }}>
+          <div style={{ fontSize:40, marginBottom:12 }}>🎉</div>
+          <div style={{ color:'#22c55e', fontSize:16, fontWeight:700, marginBottom:6 }}>Videoclipe pronto!</div>
+          <div style={{ color:'#6b7280', fontSize:12, marginBottom:20 }}>Seu videoclipe foi gerado com sucesso</div>
+          <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap' }}>
+            <a href={mergeUrl} target="_blank" rel="noreferrer"
+              style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'12px 24px', background:'linear-gradient(135deg,#22c55e,#16a34a)', color:'#fff', borderRadius:12, fontSize:14, fontWeight:600, textDecoration:'none', boxShadow:'0 4px 18px rgba(34,197,94,.3)' }}>
+              ▶ Assistir Vídeo
+            </a>
+            <a href={mergeUrl} download={`clipvox_${jobId}.mp4`}
+              style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'12px 24px', background:'rgba(255,255,255,.07)', color:'#fff', border:'1px solid rgba(255,255,255,.15)', borderRadius:12, fontSize:14, fontWeight:600, textDecoration:'none' }}>
+              ⬇ Baixar MP4
+            </a>
+          </div>
+        </div>
+      )}
+
+      {mergeStatus === 'failed' && (
+        <div style={{ textAlign:'center', padding:'24px' }}>
+          <div style={{ fontSize:32, marginBottom:10 }}>❌</div>
+          <div style={{ color:'#ef4444', fontSize:14, fontWeight:600, marginBottom:8 }}>Merge falhou</div>
+          <div style={{ color:'#6b7280', fontSize:12, marginBottom:16 }}>{mergeError || 'Erro desconhecido'}</div>
+          <button onClick={() => { setMergeStatus(null); setMergeError(null) }}
             style={{ background:'rgba(255,255,255,.06)', color:'#fff', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'8px 20px', fontSize:13, cursor:'pointer' }}>
             🔄 Tentar novamente
           </button>
@@ -537,7 +589,6 @@ function ScenesGrid({ scenes }) {
   )
 }
 
-// ─── MAIN DASHBOARD ───────────────────────────────────────────
 export default function Dashboard({ onBack }) {
   const [phase, setPhase]         = useState('upload')
   const [credits, setCredits]     = useState(500)
@@ -547,7 +598,6 @@ export default function Dashboard({ onBack }) {
   const [serverReady, setServerReady] = useState(false)
   const pollRef = useRef()
 
-  // ✅ Wake-up ao carregar
   useEffect(() => {
     const wake = async () => {
       try {
@@ -563,10 +613,7 @@ export default function Dashboard({ onBack }) {
 
   const startGeneration = async ({ file, desc, style, duration, aspectRatio, resolution, refImage }) => {
     try {
-      setFileName(file.name)
-      setPhase('processing')
-      setCredits(c => c - 100)
-
+      setFileName(file.name); setPhase('processing'); setCredits(c => c - 100)
       const formData = new FormData()
       formData.append('audio', file)
       formData.append('description', desc)
@@ -578,7 +625,6 @@ export default function Dashboard({ onBack }) {
 
       const controller = new AbortController()
       const tid = setTimeout(() => controller.abort(), 90000)
-
       let response
       try {
         response = await fetch(`${API_URL}/api/videos/generate`, { method:'POST', body:formData, signal:controller.signal })
@@ -586,22 +632,18 @@ export default function Dashboard({ onBack }) {
       } catch(fetchErr) {
         clearTimeout(tid)
         alert(fetchErr.name === 'AbortError' ? 'Servidor demorando — aguarde 30s e tente novamente.' : 'Não foi possível conectar ao servidor.')
-        setPhase('upload')
-        return
+        setPhase('upload'); return
       }
 
       if (!response.ok) {
-        const err = await response.text().catch(() => '')
         alert(response.status === 504 ? 'Servidor em cold start. Aguarde 30s e tente.' : `Erro ${response.status}. Tente novamente.`)
-        setPhase('upload')
-        return
+        setPhase('upload'); return
       }
 
       const data = await response.json()
       if (!data.job_id) { alert('Resposta inesperada. Tente novamente.'); setPhase('upload'); return }
 
       setJobId(data.job_id)
-
       pollRef.current = setInterval(async () => {
         try {
           const res    = await fetch(`${API_URL}/api/videos/status/${data.job_id}`)
@@ -668,13 +710,21 @@ export default function Dashboard({ onBack }) {
           {jobStatus?.creative_concept && <CreativeConceptCard concept={jobStatus.creative_concept} />}
           {jobStatus?.scenes && <div style={{ marginTop:16 }}><ScenesGrid scenes={jobStatus.scenes} /></div>}
 
-          {/* ✅ NOVO: Painel de vídeos Kling — aparece quando imagens estão prontas */}
           {jobStatus?.status === 'completed' && jobId && (
-            <VideoClipsPanel
-              jobId={jobId}
-              jobStatus={jobStatus}
-              onVideosGenerated={(clips) => console.log('Vídeos prontos:', clips?.length)}
-            />
+            <>
+              <VideoClipsPanel
+                jobId={jobId}
+                jobStatus={jobStatus}
+                onVideosGenerated={(clips) => console.log('Vídeos prontos:', clips?.length)}
+              />
+              {jobStatus?.videos_status === 'completed' && jobStatus?.video_clips?.some(c => c.success) && (
+                <MergePanel
+                  jobId={jobId}
+                  jobStatus={jobStatus}
+                  videoClips={jobStatus.video_clips}
+                />
+              )}
+            </>
           )}
 
           {jobStatus?.status === 'failed' && (
