@@ -245,6 +245,11 @@ def generate_videos_batch(scenes, bpm=120, aspect_ratio="16:9", mode="std"):
             success_count += 1
         results.append(result)
 
+        # Delay para evitar rate limit do PiAPI
+        if i < total - 1:  # não espera após a última cena
+            print(f"   ⏸️ Aguardando 5s para evitar rate limit...")
+            time.sleep(5)
+
     print(f"\n✅ Concluído: {success_count}/{total} vídeos gerados")
     return results
 
