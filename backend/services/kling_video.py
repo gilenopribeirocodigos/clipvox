@@ -339,3 +339,9 @@ def generate_video_clips_batch(
 
     print(f"\n✅ Generated {successful_count}/{len(scenes)} clips successfully")
     return results
+
+
+# ═══════════════════════════════════════════════════════════════
+# ALIAS para compatibilidade com videos.py existente
+# ═══════════════════════════════════════════════════════════════
+generate_videos_batch = generate_video_clips_batch
