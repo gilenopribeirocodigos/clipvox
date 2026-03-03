@@ -330,11 +330,12 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
     setGenerating(true); setError(null); setVideosStatus('processing')
     try {
       const controller = new AbortController()
-      const tid = setTimeout(() => controller.abort(), 30000)
+      const tid = setTimeout(() => controller.abort(), 90000)
       const res = await fetch(`${API_URL}/api/videos/generate-clips/${jobId}?mode=${klingMode}`, { method:'POST', signal:controller.signal })
       clearTimeout(tid)
       if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `Erro ${res.status}`) }
     } catch(err) {
+      if (err.name === 'AbortError') { return } // backend ainda pode estar processando
       setError(err.message || 'Erro ao iniciar geração de vídeos')
       setGenerating(false); setVideosStatus(null)
     }
