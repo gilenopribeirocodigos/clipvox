@@ -194,7 +194,8 @@ def _generate_nano_banana_image(
                         or td.get("output", {})
                     )
                     img_url = (
-                        output.get("image_url")
+                        (output.get("image_urls") or [None])[0]   # ← Nano Banana retorna lista
+                        or output.get("image_url")
                         or output.get("url")
                         or (output.get("images") or [{}])[0].get("url")
                         or (td.get("data", {}).get("images") or [{}])[0].get("url")
