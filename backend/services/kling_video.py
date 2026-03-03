@@ -1,293 +1,341 @@
 """
-🎬 ClipVox - Kling Video Generation Service (via PiAPI)
-Solução para rate-limit do R2: rehosting de imagens via imgbb antes de enviar ao Kling
+🎬 ClipVox - Kling Video Service (API Oficial - sem PiAPI!)
+──────────────────────────────────────────────────────────
+Gera clipes de vídeo usando a API oficial do Kling AI
+Endpoint: api.klingai.com
+
+Auth: JWT com Access Key + Secret Key
 """
 
 import os
 import time
-import requests
 import base64
+import requests
+import jwt
 from typing import Optional
 
-PIAPI_KEY        = os.getenv("PIAPI_API_KEY") or os.getenv("PIAPI_KEY")
-IMGBB_API_KEY    = os.getenv("IMGBB_API_KEY", "")
-PIAPI_BASE       = "https://api.piapi.ai/api/v1/task"
-MAX_WAIT_SECONDS = 300
-POLL_INTERVAL    = 5
+# ── Kling API Oficial ─────────────────────────────────────────────
+KLING_ACCESS_KEY = os.getenv("KLING_ACCESS_KEY", "")
+KLING_SECRET_KEY = os.getenv("KLING_SECRET_KEY", "")
+KLING_API_BASE   = "https://api.klingai.com"
 
 
-def rehost_image_imgbb(image_url: str, scene_number: int, max_retries: int = 3) -> Optional[str]:
+# ═══════════════════════════════════════════════════════════════
+# JWT AUTHENTICATION
+# ═══════════════════════════════════════════════════════════════
+def _get_jwt_token() -> str:
+    """Gera JWT token para autenticação na API oficial do Kling."""
+    if not KLING_ACCESS_KEY or not KLING_SECRET_KEY:
+        raise ValueError("KLING_ACCESS_KEY e KLING_SECRET_KEY são obrigatórios")
+
+    headers = {"alg": "HS256", "typ": "JWT"}
+    payload = {
+        "iss": KLING_ACCESS_KEY,
+        "exp": int(time.time()) + 1800,
+        "nbf": int(time.time()) - 5
+    }
+    return jwt.encode(payload, KLING_SECRET_KEY, algorithm="HS256", headers=headers)
+
+
+def _auth_headers() -> dict:
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {_get_jwt_token()}"
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# IMGBB (mantido para compatibilidade — hospedar imagem para I2V)
+# ═══════════════════════════════════════════════════════════════
+IMGBB_KEY = os.getenv("IMGBB_API_KEY", "")
+
+def rehost_image_imgbb(image_path: str) -> Optional[str]:
     """
-    Baixa a imagem do R2/Workers e faz upload para imgbb.
-    Tenta até max_retries vezes com delay crescente.
+    Faz upload da imagem para imgbb para usar como frame inicial do vídeo.
+    A API oficial do Kling para I2V aceita URL pública (não base64 direto).
     """
-    print(f"   📥 Baixando imagem: {image_url[:80]}")
-
-    # Download da imagem
-    image_bytes = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            r = requests.get(image_url, timeout=30)
-            if r.status_code == 200:
-                image_bytes = r.content
-                print(f"   ✅ Imagem baixada ({len(image_bytes)//1024}KB)")
-                break
-            else:
-                print(f"   ⚠️ Download falhou (HTTP {r.status_code}) — tentativa {attempt}/{max_retries}")
-        except Exception as e:
-            print(f"   ⚠️ Erro no download: {e} — tentativa {attempt}/{max_retries}")
-        if attempt < max_retries:
-            time.sleep(5 * attempt)
-
-    if not image_bytes:
-        print(f"   ❌ Falha ao baixar imagem após {max_retries} tentativas")
+    if not IMGBB_KEY:
+        print("   ⚠️ IMGBB_API_KEY não configurada — tentando base64")
+        return None
+    try:
+        with open(image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        resp = requests.post(
+            f"https://api.imgbb.com/1/upload?key={IMGBB_KEY}",
+            data={"image": b64, "name": f"clipvox_{int(time.time())}"},
+            timeout=60
+        )
+        if resp.status_code == 200:
+            url = resp.json().get("data", {}).get("url")
+            if url:
+                time.sleep(3)  # CDN propagation
+                print(f"   ✅ imgbb: {url}")
+                return url
+        print(f"   ❌ imgbb falhou: HTTP {resp.status_code}")
+        return None
+    except Exception as e:
+        print(f"   ❌ imgbb erro: {e}")
         return None
 
-    if not IMGBB_API_KEY:
-        print(f"   ❌ IMGBB_API_KEY não configurada")
-        return None
 
-    image_b64   = base64.b64encode(image_bytes).decode("utf-8")
-    upload_url  = f"https://api.imgbb.com/1/upload?key={IMGBB_API_KEY}"
-
-    # Upload para imgbb com retry
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = requests.post(
-                upload_url,
-                data={"image": image_b64, "name": f"clipvox_scene_{scene_number}"},
-                timeout=60
-            )
-            print(f"   📥 imgbb response HTTP {resp.status_code}: {resp.text[:200]}")
-
-            if resp.status_code == 200:
-                data      = resp.json()
-                imgbb_url = data.get("data", {}).get("url")
-                if imgbb_url:
-                    print(f"   ✅ imgbb URL: {imgbb_url}")
-                    # Aguarda 3s para URL propagar no CDN do imgbb
-                    time.sleep(3)
-                    return imgbb_url
-                else:
-                    print(f"   ⚠️ URL não encontrada na resposta imgbb — tentativa {attempt}/{max_retries}")
-            else:
-                print(f"   ⚠️ imgbb upload falhou (HTTP {resp.status_code}) — tentativa {attempt}/{max_retries}")
-
-        except Exception as e:
-            print(f"   ⚠️ Erro no upload imgbb: {e} — tentativa {attempt}/{max_retries}")
-
-        if attempt < max_retries:
-            wait = 10 * attempt
-            print(f"   ⏳ Aguardando {wait}s antes de tentar novamente...")
-            time.sleep(wait)
-
-    print(f"   ❌ imgbb falhou após {max_retries} tentativas")
-    return None
+def _image_to_base64(image_path: str) -> str:
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
 
 
-def generate_scene_video(
+# ═══════════════════════════════════════════════════════════════
+# CREATE KLING VIDEO TASK (API OFICIAL)
+# ═══════════════════════════════════════════════════════════════
+def create_kling_video_task(
     image_url: str,
     prompt: str,
     scene_number: int,
-    bpm: float = 120,
     aspect_ratio: str = "16:9",
-    mode: str = "std"
-) -> dict:
+    duration: int = 5,
+    mode: str = "std",
+    model: str = "kling-v1-6"
+) -> Optional[str]:
+    """
+    Cria task de geração de vídeo via API oficial do Kling.
+    Usa image-to-video (I2V) com a imagem da cena como frame inicial.
 
-    if not PIAPI_KEY:
-        return _video_error(scene_number, "PIAPI_API_KEY not configured")
+    Returns: task_id ou None se falhar
+    """
+    print(f"\n🎬 Creating video task — Scene {scene_number}")
+    print(f"   Model: {model} | Mode: {mode} | {duration}s | {aspect_ratio}")
 
-    if not image_url:
-        return _video_error(scene_number, "No image URL provided")
+    payload = {
+        "model_name":     model,
+        "prompt":         prompt[:2500],
+        "image":          image_url,   # URL pública da imagem
+        "duration":       str(duration),
+        "mode":           mode,
+        "aspect_ratio":   aspect_ratio,
+    }
 
-    duration = 5
+    try:
+        resp = requests.post(
+            f"{KLING_API_BASE}/v1/videos/image2video",
+            headers=_auth_headers(),
+            json=payload,
+            timeout=30
+        )
+        print(f"   📥 HTTP {resp.status_code}: {resp.text[:300]}")
 
-    print(f"\n🎬 Gerando vídeo — Cena {scene_number}")
-    print(f"   duration: {duration}s | mode: {mode} | aspect_ratio: {aspect_ratio}")
+        data = resp.json()
+        if data.get("code") != 0:
+            print(f"   ❌ Erro: {data.get('message')}")
+            return None
 
-    # Tenta rehost até 2 vezes se a 1ª falhar no Kling
-    for rehost_attempt in range(1, 3):
-        imgbb_url = rehost_image_imgbb(image_url, scene_number)
+        task_id = data.get("data", {}).get("task_id")
+        print(f"   ✅ Task criada: {task_id}")
+        return task_id
 
-        if not imgbb_url:
-            print(f"   ❌ Rehost falhou — abortando cena {scene_number}")
-            return _video_error(scene_number, "Falha no rehost via imgbb")
+    except Exception as e:
+        print(f"   ❌ Exceção: {e}")
+        return None
 
-        print(f"   🔗 URL enviada para Kling: {imgbb_url} (tentativa {rehost_attempt})")
 
-        motion_prompt = _build_motion_prompt(prompt, scene_number)
+# ═══════════════════════════════════════════════════════════════
+# POLL KLING VIDEO TASK
+# ═══════════════════════════════════════════════════════════════
+def poll_kling_video(task_id: str, scene_number: int, timeout: int = 600) -> Optional[str]:
+    """
+    Aguarda conclusão da task e retorna URL do vídeo.
+    Timeout padrão: 10 minutos
+    """
+    print(f"   ⏳ Polling task {task_id}...")
 
-        headers = {
-            "x-api-key":    PIAPI_KEY,
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "model":     "kling",
-            "task_type": "video_generation",
-            "input": {
-                "prompt":       motion_prompt,
-                "image_url":    imgbb_url,
-                "duration":     duration,
-                "aspect_ratio": aspect_ratio,
-                "mode":         mode
-            }
-        }
-
+    for elapsed in range(10, timeout + 1, 10):
+        time.sleep(10)
         try:
-            response = requests.post(PIAPI_BASE, headers=headers, json=payload, timeout=30)
-            print(f"   📥 HTTP {response.status_code}: {response.text[:500]}")
+            resp = requests.get(
+                f"{KLING_API_BASE}/v1/videos/image2video/{task_id}",
+                headers=_auth_headers(),
+                timeout=15
+            )
+            data = resp.json()
 
-            if response.status_code not in (200, 201):
-                try:
-                    err_body = response.json()
-                    err_msg  = err_body.get("message") or str(err_body)
-                except Exception:
-                    err_msg = response.text[:300]
-                print(f"❌ PiAPI HTTP {response.status_code}: {err_msg}")
-                return _video_error(scene_number, f"HTTP {response.status_code}: {err_msg[:120]}")
+            if data.get("code") != 0:
+                print(f"   ❌ Polling erro: {data.get('message')}")
+                return None
 
-            data      = response.json()
-            task_data = data.get("data", data)
+            task_info = data.get("data", {})
+            status    = task_info.get("task_status", "")
+            print(f"   ⏳ Cena {scene_number} — {status} ({elapsed}s)")
 
-            if task_data.get("status") in ("failed", "error"):
-                err     = task_data.get("error", {})
-                err_msg = err.get("message") if isinstance(err, dict) else str(err)
-                print(f"❌ Task falhou na criação: {err_msg}")
-                return _video_error(scene_number, f"Task failed: {err_msg}")
+            if status == "succeed":
+                videos = task_info.get("task_result", {}).get("videos", [])
+                if videos:
+                    video_url = videos[0].get("url")
+                    print(f"   ✅ Vídeo pronto: {video_url[:80]}")
+                    return video_url
+                print(f"   ❌ Nenhum vídeo no resultado: {task_info}")
+                return None
 
-            task_id = task_data.get("task_id") or data.get("task_id") or data.get("id")
-
-            if not task_id:
-                print(f"❌ task_id não encontrado: {data}")
-                return _video_error(scene_number, "No task_id in response")
-
-            print(f"   ✅ Task criada: {task_id}")
-
-            video_url = _poll_task(task_id, scene_number)
-
-            if video_url:
-                print(f"   ✅ Vídeo pronto: {video_url[:80]}")
-                return {
-                    "success":      True,
-                    "scene_number": scene_number,
-                    "task_id":      task_id,
-                    "video_url":    video_url,
-                    "duration":     duration,
-                    "mode":         mode,
-                    "aspect_ratio": aspect_ratio
-                }
-
-            # Se falhou com "save image error", tenta novo rehost
-            if rehost_attempt < 2:
-                print(f"   🔄 Falhou no Kling — tentando novo rehost para cena {scene_number}...")
-                time.sleep(15)  # espera antes de tentar novamente
-                continue
-            else:
-                return _video_error(scene_number, "Timeout or failed during polling")
-
-        except requests.exceptions.Timeout:
-            return _video_error(scene_number, "Request timeout")
-        except Exception as e:
-            print(f"❌ Exceção: {e}")
-            import traceback; traceback.print_exc()
-            return _video_error(scene_number, str(e))
-
-    return _video_error(scene_number, "Falhou após todas as tentativas")
-
-
-def _poll_task(task_id: str, scene_number: int) -> Optional[str]:
-    headers = {"x-api-key": PIAPI_KEY, "Content-Type": "application/json"}
-    elapsed = 0
-
-    while elapsed < MAX_WAIT_SECONDS:
-        time.sleep(POLL_INTERVAL)
-        elapsed += POLL_INTERVAL
-
-        try:
-            r         = requests.get(f"{PIAPI_BASE}/{task_id}", headers=headers, timeout=15)
-            data      = r.json()
-            task_data = data.get("data", data)
-            status    = task_data.get("status", "")
-
-            print(f"   ⏳ Cena {scene_number} — status: {status} ({elapsed}s)")
-
-            if status in ("completed", "succeed", "success", 99):
-                return _extract_video_url(task_data)
-
-            elif status in ("failed", "error", "cancelled"):
-                err = task_data.get("error", {})
-                print(f"   ❌ Falhou no polling: {err}")
-                return None  # Retorna None para tentar novo rehost
+            elif status == "failed":
+                print(f"   ❌ Task falhou: {task_info.get('task_status_msg')}")
+                return None
 
         except Exception as e:
             print(f"   ⚠️ Polling erro: {e}")
 
+    print(f"   ❌ Timeout ({timeout}s) — Cena {scene_number}")
     return None
 
 
-def _extract_video_url(task_data: dict) -> Optional[str]:
-    output = task_data.get("output", {})
-    works  = output.get("works", [])
-    if works:
-        video = works[0].get("video", {})
-        url   = video.get("resource_without_watermark") or video.get("resource")
-        if url:
-            return url
-    return (
-        output.get("video_url") or output.get("url") or
-        task_data.get("video_url") or task_data.get("url")
-    )
+# ═══════════════════════════════════════════════════════════════
+# GENERATE SINGLE CLIP (imagem → vídeo)
+# ═══════════════════════════════════════════════════════════════
+def generate_video_clip(
+    image_path: str,
+    image_url: str,
+    prompt: str,
+    scene_number: int,
+    aspect_ratio: str = "16:9",
+    duration: int = 5,
+    mode: str = "std",
+    model: str = "kling-v1-6",
+    job_id: str = "",
+    max_retries: int = 3
+) -> dict:
+    """
+    Gera um clipe de vídeo a partir de uma imagem de cena.
+    Usa a API oficial do Kling (sem PiAPI).
 
+    Returns dict com: success, video_url, video_path, scene_number, task_id
+    """
 
-def generate_videos_batch(scenes, bpm=120, aspect_ratio="16:9", mode="std"):
-    results       = []
-    success_count = 0
-    total         = len(scenes)
+    # ── Garantir URL pública da imagem ────────────────────────
+    # A API I2V do Kling precisa de URL pública, não base64
+    public_url = image_url
 
-    print(f"\n🎬 Gerando {total} vídeos — Kling AI via PiAPI | modo: {mode}")
+    # Se a URL for local ou inválida, tenta imgbb
+    if not public_url or public_url.startswith("/api/"):
+        print(f"   📤 URL local detectada — fazendo upload imgbb...")
+        public_url = rehost_image_imgbb(image_path)
+        if not public_url:
+            # Fallback: tenta usar base64 diretamente
+            print(f"   📤 Tentando base64 como fallback...")
+            public_url = f"data:image/jpeg;base64,{_image_to_base64(image_path)}"
 
-    for i, scene in enumerate(scenes):
-        scene_number = scene.get("scene_number", i + 1)
-        image_url    = scene.get("image_url") or scene.get("r2_url")
-        prompt       = scene.get("prompt", "")
+    for attempt in range(1, max_retries + 1):
+        print(f"\n🎬 Scene {scene_number} — Attempt {attempt}/{max_retries}")
 
-        print(f"\n[{i+1}/{total}] Cena {scene_number}...")
-        result = generate_scene_video(
-            image_url=image_url, prompt=prompt,
-            scene_number=scene_number, bpm=bpm,
-            aspect_ratio=aspect_ratio, mode=mode
+        task_id = create_kling_video_task(
+            image_url=public_url,
+            prompt=prompt,
+            scene_number=scene_number,
+            aspect_ratio=aspect_ratio,
+            duration=duration,
+            mode=mode,
+            model=model
         )
+
+        if not task_id:
+            print(f"   ⚠️ Falha ao criar task — aguardando antes de retry...")
+            time.sleep(15 * attempt)
+            continue
+
+        video_url = poll_kling_video(task_id, scene_number)
+
+        if video_url:
+            # Baixar vídeo localmente
+            local_path = _download_video(video_url, scene_number, job_id)
+            return {
+                "success":      True,
+                "scene_number": scene_number,
+                "video_url":    video_url,
+                "video_path":   local_path,
+                "task_id":      task_id,
+                "attempt":      attempt,
+            }
+
+        print(f"   ⚠️ Vídeo não gerado — aguardando retry...")
+        time.sleep(20 * attempt)
+
+    print(f"   ❌ Scene {scene_number} falhou após {max_retries} tentativas")
+    return {
+        "success":      False,
+        "scene_number": scene_number,
+        "video_url":    None,
+        "video_path":   None,
+        "task_id":      None,
+        "error":        f"Falhou após {max_retries} tentativas",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# DOWNLOAD VIDEO
+# ═══════════════════════════════════════════════════════════════
+def _download_video(video_url: str, scene_number: int, job_id: str) -> Optional[str]:
+    """Baixa o vídeo gerado para armazenamento local temporário."""
+    try:
+        from config import UPLOAD_DIR
+        resp = requests.get(video_url, timeout=120, stream=True)
+        if resp.status_code != 200:
+            return None
+
+        filename   = f"clip_{scene_number:03d}.mp4"
+        local_path = os.path.join(UPLOAD_DIR, f"job_{job_id}_{filename}" if job_id else filename)
+
+        with open(local_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        print(f"   💾 Vídeo salvo: {local_path}")
+        return local_path
+    except Exception as e:
+        print(f"   ❌ Erro ao baixar vídeo: {e}")
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# GENERATE CLIPS BATCH
+# ═══════════════════════════════════════════════════════════════
+def generate_video_clips_batch(
+    scenes: list,
+    aspect_ratio: str = "16:9",
+    duration: int = 5,
+    mode: str = "std",
+    model: str = "kling-v1-6",
+    job_id: str = ""
+) -> list:
+    """
+    Gera clipes de vídeo para múltiplas cenas em batch.
+
+    scenes: lista de dicts com {scene_number, prompt, image_path, image_url}
+    Returns: lista de resultados por cena
+    """
+    results         = []
+    successful_count = 0
+
+    print(f"\n🎬 Generating {len(scenes)} video clips via Kling API Oficial...")
+    print(f"   Model:        {model}")
+    print(f"   Mode:         {mode}")
+    print(f"   Duration:     {duration}s")
+    print(f"   Aspect Ratio: {aspect_ratio}")
+
+    for scene in scenes:
+        result = generate_video_clip(
+            image_path=scene.get("image_path", ""),
+            image_url=scene.get("image_url", ""),
+            prompt=scene.get("prompt", ""),
+            scene_number=scene["scene_number"],
+            aspect_ratio=aspect_ratio,
+            duration=duration,
+            mode=mode,
+            model=model,
+            job_id=job_id
+        )
+
         if result["success"]:
-            success_count += 1
+            successful_count += 1
         results.append(result)
 
-        if i < total - 1:
-            print(f"   ⏸️ Aguardando 5s para evitar rate limit...")
+        # Delay entre cenas para evitar rate limit
+        if scene != scenes[-1]:
             time.sleep(5)
 
-    print(f"\n✅ Concluído: {success_count}/{total} vídeos gerados")
+    print(f"\n✅ Generated {successful_count}/{len(scenes)} clips successfully")
     return results
-
-
-def _build_motion_prompt(scene_prompt: str, scene_number: int) -> str:
-    s = scene_prompt.lower()
-    if any(w in s for w in ["action", "fight", "run", "energy"]):
-        motion = "dynamic camera movement, fast pan"
-    elif any(w in s for w in ["calm", "slow", "peaceful", "night"]):
-        motion = "slow gentle pan, smooth cinematic movement"
-    elif any(w in s for w in ["landscape", "nature", "sky"]):
-        motion = "slow dolly forward, cinematic wide shot"
-    elif any(w in s for w in ["face", "portrait", "close"]):
-        motion = "subtle zoom in, gentle rack focus"
-    else:
-        motion = "smooth cinematic pan, subtle camera movement"
-    return f"{scene_prompt[:300]}, {motion}"[:500]
-
-
-def _video_error(scene_number, message):
-    return {"success": False, "scene_number": scene_number,
-            "task_id": None, "video_url": None, "duration": 5, "error": message}
-
-def get_clip_duration_from_bpm(bpm):
-    return 5
