@@ -1,154 +1,200 @@
 """
-🎬 ClipVox - Video Generation Service (Image Generation + Face Swap)
+🎬 ClipVox - Video Generation Service
 ──────────────────────────────────────────────────────────────
-Gera imagens cinematográficas usando Stability AI (SD3.5)
-🎭 NOVO: Face Swap com PiAPI (coloca pessoa nas cenas!)
-E faz upload pro CloudFlare R2 para armazenamento permanente
+Sem referência  → Stability AI SD3.5 (text-to-image)
+Com referência  → Kling IMAGE 2.1 via PiAPI (Single Reference + Character Features)
+                  Mantém o rosto da pessoa em TODAS as cenas
 
 🆕 FEATURES:
-- ✅ FEATURE 2: Aspect Ratio (16:9, 9:16, 1:1, 4:3)
-- ✅ FEATURE 3: Resolution (720p, 1080p)
-- ✅ FEATURE 4: Visual Styles (10+ estilos)
-- ✅ FEATURE 5: Reference Image (image-to-image)
-- ✅ FEATURE 6: Face Swap 🎭 (pessoa nas cenas!) - PiAPI
+- ✅ Aspect Ratio (16:9, 9:16, 1:1, 4:3)
+- ✅ Resolution (720p, 1080p)
+- ✅ Visual Styles (10+ estilos)
+- ✅ Reference Image → Kling IMAGE 2.1 (face consistente!)
 """
 
 import os
 import base64
+import time
 import requests
 from typing import Optional
 from PIL import Image
 import io
 
 from config import (
-    STABILITY_API_KEY, 
-    UPLOAD_DIR, 
+    STABILITY_API_KEY,
+    UPLOAD_DIR,
     VISUAL_STYLES,
     R2_BUCKET_NAME,
     R2_PUBLIC_URL,
     get_r2_client
 )
 
-# 🎭 NOVO: Importar face swap service (PiAPI)
-from services.face_swap import face_swap_batch
+# ── PiAPI config (mesmo usado no kling_video.py) ──────────────────
+PIAPI_KEY   = os.getenv("PIAPI_API_KEY") or os.getenv("PIAPI_KEY")
+IMGBB_KEY   = os.getenv("IMGBB_API_KEY", "")
+PIAPI_BASE  = "https://api.piapi.ai/api/v1/task"
 
+# ── Aspect ratio → string aceita pelo Kling ───────────────────────
+KLING_ASPECT_RATIO = {
+    "16:9": "16:9",
+    "9:16": "9:16",
+    "1:1":  "1:1",
+    "4:3":  "4:3",
+}
 
-# ═══════════════════════════════════════════════════════════════════
-# ASPECT RATIO DIMENSIONS
-# ═══════════════════════════════════════════════════════════════════
 ASPECT_RATIO_DIMENSIONS = {
-    "16:9": {
-        "720p": (1280, 720),
-        "1080p": (1920, 1080)
-    },
-    "9:16": {
-        "720p": (720, 1280),
-        "1080p": (1080, 1920)
-    },
-    "1:1": {
-        "720p": (1024, 1024),
-        "1080p": (1536, 1536)
-    },
-    "4:3": {
-        "720p": (1024, 768),
-        "1080p": (1536, 1152)
-    }
+    "16:9": {"720p": (1280, 720),  "1080p": (1920, 1080)},
+    "9:16": {"720p": (720, 1280),  "1080p": (1080, 1920)},
+    "1:1":  {"720p": (1024, 1024), "1080p": (1536, 1536)},
+    "4:3":  {"720p": (1024, 768),  "1080p": (1536, 1152)},
 }
 
 
-# ═══════════════════════════════════════════════════════════════════
-# RESIZE REFERENCE IMAGE TO ASPECT RATIO
-# ═══════════════════════════════════════════════════════════════════
-def resize_image_to_aspect_ratio(
-    image_path: str,
-    aspect_ratio: str = "16:9",
-    resolution: str = "720p"
-) -> str:
-    """
-    🔧 FIX CRÍTICO: Redimensiona imagem de referência para o aspect ratio desejado
-    
-    Stability AI image-to-image NÃO permite especificar aspect_ratio no payload.
-    O aspect ratio é HERDADO da imagem enviada.
-    
-    Solução: Redimensionar a imagem ANTES de enviar para a API.
-    
-    Args:
-        image_path: Caminho da imagem original
-        aspect_ratio: Proporção desejada (16:9, 9:16, 1:1, 4:3)
-        resolution: Qualidade (720p, 1080p)
-    
-    Returns:
-        str: Caminho da imagem redimensionada
-    """
+# ═══════════════════════════════════════════════════════════════
+# IMGBB REHOST (igual ao kling_video.py)
+# ═══════════════════════════════════════════════════════════════
+def _rehost_imgbb(image_path: str, name: str = "ref") -> Optional[str]:
+    """Faz upload de arquivo local para imgbb e retorna URL pública."""
+    if not IMGBB_KEY:
+        print("   ❌ IMGBB_API_KEY não configurada")
+        return None
     try:
-        # Obter dimensões target
-        target_width, target_height = ASPECT_RATIO_DIMENSIONS[aspect_ratio][resolution]
-        
-        # Abrir imagem original
-        img = Image.open(image_path)
-        original_width, original_height = img.size
-        
-        print(f"🖼️ Resizing reference image:")
-        print(f"   Original: {original_width}x{original_height}")
-        print(f"   Target: {target_width}x{target_height} ({aspect_ratio}, {resolution})")
-        
-        # ─── Calcular crop para manter aspect ratio ───────────────
-        target_aspect = target_width / target_height
-        original_aspect = original_width / original_height
-        
-        if original_aspect > target_aspect:
-            # Imagem é mais larga, crop nas laterais
-            new_width = int(original_height * target_aspect)
-            left = (original_width - new_width) // 2
-            img = img.crop((left, 0, left + new_width, original_height))
-        else:
-            # Imagem é mais alta, crop em cima/baixo
-            new_height = int(original_width / target_aspect)
-            top = (original_height - new_height) // 2
-            img = img.crop((0, top, original_width, top + new_height))
-        
-        # ─── Resize para dimensões target ─────────────────────────
-        img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
-        
-        # ─── Salvar imagem redimensionada ─────────────────────────
-        resized_path = image_path.replace(".jpeg", f"_resized_{aspect_ratio.replace(':', 'x')}_{resolution}.jpeg")
-        resized_path = resized_path.replace(".jpg", f"_resized_{aspect_ratio.replace(':', 'x')}_{resolution}.jpg")
-        resized_path = resized_path.replace(".png", f"_resized_{aspect_ratio.replace(':', 'x')}_{resolution}.png")
-        
-        img.save(resized_path, quality=95, optimize=True)
-        
-        print(f"✅ Resized image saved: {os.path.basename(resized_path)}")
-        
-        return resized_path
-        
+        with open(image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        resp = requests.post(
+            f"https://api.imgbb.com/1/upload?key={IMGBB_KEY}",
+            data={"image": b64, "name": name},
+            timeout=60
+        )
+        if resp.status_code == 200:
+            url = resp.json().get("data", {}).get("url")
+            if url:
+                time.sleep(2)  # CDN propagation
+                print(f"   ✅ imgbb URL: {url}")
+                return url
+        print(f"   ❌ imgbb falhou (HTTP {resp.status_code})")
+        return None
     except Exception as e:
-        print(f"⚠️ Error resizing image: {e}")
-        print(f"   Using original image instead")
-        return image_path
+        print(f"   ❌ imgbb erro: {e}")
+        return None
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# KLING IMAGE 2.1 — Single Reference (Character Features)
+# ═══════════════════════════════════════════════════════════════
+def _generate_kling_image(
+    prompt: str,
+    reference_url: str,
+    aspect_ratio: str = "16:9",
+    style: str = "realistic",
+    scene_number: int = 1
+) -> Optional[str]:
+    """
+    Chama Kling IMAGE 2.1 via PiAPI com Single Reference (Character Features).
+    Retorna URL da imagem gerada, ou None se falhar.
+    """
+    if not PIAPI_KEY:
+        print("   ❌ PIAPI_KEY não configurada")
+        return None
+
+    # Enriquece o prompt com o estilo
+    style_config = VISUAL_STYLES.get(style, VISUAL_STYLES["realistic"])
+    style_prefix = style_config.get("prefix", "")
+    full_prompt   = f"{style_prefix}, {prompt}" if style_prefix else prompt
+
+    headers = {
+        "x-api-key":    PIAPI_KEY,
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model":     "kling",
+        "task_type": "image_generation",
+        "input": {
+            "prompt":               full_prompt[:500],
+            "aspect_ratio":         KLING_ASPECT_RATIO.get(aspect_ratio, "16:9"),
+            "image_reference":      "subject",        # Single Reference - Character Features
+            "image_reference_url":  reference_url,
+            "negative_prompt":      "blurry, distorted face, different person, wrong identity",
+        }
+    }
+
+    print(f"   🎨 Kling IMAGE 2.1 — Cena {scene_number} (Single Reference)")
+    print(f"   📐 Aspect ratio: {aspect_ratio}")
+
+    try:
+        resp = requests.post(PIAPI_BASE, headers=headers, json=payload, timeout=30)
+        print(f"   📥 HTTP {resp.status_code}: {resp.text[:300]}")
+
+        if resp.status_code not in (200, 201):
+            print(f"   ❌ PiAPI erro: {resp.text[:200]}")
+            return None
+
+        data      = resp.json()
+        task_data = data.get("data", data)
+
+        if task_data.get("status") in ("failed", "error"):
+            print(f"   ❌ Task falhou: {task_data.get('error')}")
+            return None
+
+        task_id = task_data.get("task_id") or data.get("task_id")
+        if not task_id:
+            print(f"   ❌ task_id não encontrado: {data}")
+            return None
+
+        print(f"   ✅ Task criada: {task_id}")
+
+        # ── Polling ───────────────────────────────────────────
+        for elapsed in range(5, 301, 5):
+            time.sleep(5)
+            try:
+                r         = requests.get(f"{PIAPI_BASE}/{task_id}", headers=headers, timeout=15)
+                td        = r.json().get("data", r.json())
+                status    = td.get("status", "")
+                print(f"   ⏳ Cena {scene_number} — {status} ({elapsed}s)")
+
+                if status in ("completed", "succeed", "success"):
+                    # Extrair URL da imagem
+                    output = td.get("output", {})
+                    works  = output.get("works", [])
+                    if works:
+                        img_url = (works[0].get("image", {}).get("resource_without_watermark")
+                                   or works[0].get("image", {}).get("resource")
+                                   or works[0].get("url"))
+                        if img_url:
+                            print(f"   ✅ Imagem pronta: {img_url[:80]}")
+                            return img_url
+                    # Fallback
+                    img_url = output.get("image_url") or output.get("url") or td.get("image_url")
+                    if img_url:
+                        print(f"   ✅ Imagem pronta: {img_url[:80]}")
+                        return img_url
+                    print(f"   ❌ URL não encontrada na resposta: {td}")
+                    return None
+
+                elif status in ("failed", "error", "cancelled"):
+                    print(f"   ❌ Falhou: {td.get('error')}")
+                    return None
+            except Exception as e:
+                print(f"   ⚠️ Polling erro: {e}")
+
+        print(f"   ❌ Timeout (300s) — Cena {scene_number}")
+        return None
+
+    except Exception as e:
+        print(f"   ❌ Exceção: {e}")
+        import traceback; traceback.print_exc()
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════
 # CLOUDFLARE R2 UPLOAD
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
 def upload_to_r2(local_path: str, r2_key: str) -> Optional[str]:
-    """
-    Faz upload de um arquivo local pro CloudFlare R2
-    
-    Args:
-        local_path: Caminho do arquivo local
-        r2_key: Key no bucket R2 (ex: "jobs/abc123/scene_001.jpg")
-    
-    Returns:
-        URL público do arquivo no R2, ou None se falhar
-    """
     try:
         r2_client = get_r2_client()
-        
         if not r2_client:
-            print("⚠️ R2 client not available, skipping upload")
             return None
-        
-        # Upload do arquivo
         with open(local_path, 'rb') as f:
             r2_client.put_object(
                 Bucket=R2_BUCKET_NAME,
@@ -156,198 +202,228 @@ def upload_to_r2(local_path: str, r2_key: str) -> Optional[str]:
                 Body=f,
                 ContentType='image/jpeg'
             )
-        
-        # Construir URL pública
         public_url = f"{R2_PUBLIC_URL}/{r2_key}"
-        
         print(f"✅ Uploaded to R2: {public_url}")
         return public_url
-        
     except Exception as e:
         print(f"❌ Error uploading to R2: {e}")
         return None
 
 
-# ═══════════════════════════════════════════════════════════════════
-# GENERATE SCENE IMAGE (STABILITY AI + R2)
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# RESIZE (para Stability AI image-to-image — mantido como fallback)
+# ═══════════════════════════════════════════════════════════════
+def resize_image_to_aspect_ratio(image_path, aspect_ratio="16:9", resolution="720p"):
+    try:
+        target_w, target_h = ASPECT_RATIO_DIMENSIONS[aspect_ratio][resolution]
+        img = Image.open(image_path)
+        ow, oh  = img.size
+        ta = target_w / target_h
+        oa = ow / oh
+        if oa > ta:
+            nw = int(oh * ta)
+            l  = (ow - nw) // 2
+            img = img.crop((l, 0, l + nw, oh))
+        else:
+            nh = int(ow / ta)
+            t  = (oh - nh) // 2
+            img = img.crop((0, t, ow, t + nh))
+        img  = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+        ext  = os.path.splitext(image_path)[1]
+        out  = image_path.replace(ext, f"_resized_{aspect_ratio.replace(':','x')}_{resolution}{ext}")
+        img.save(out, quality=95, optimize=True)
+        return out
+    except Exception as e:
+        print(f"⚠️ Resize error: {e}")
+        return image_path
+
+
+# ═══════════════════════════════════════════════════════════════
+# GENERATE SCENE IMAGE
+# ═══════════════════════════════════════════════════════════════
 def generate_scene_image(
-    prompt: str, 
-    scene_number: int, 
+    prompt: str,
+    scene_number: int,
     style: str = "realistic",
     aspect_ratio: str = "16:9",
     resolution: str = "720p",
     reference_image_path: str = None,
+    reference_imgbb_url: str = None,   # ← URL já rehostada (para não repetir upload)
     job_id: str = ""
 ) -> dict:
     """
-    Gera uma imagem para uma scene usando Stability AI
-    E faz upload pro CloudFlare R2
-    
-    🎭 NOTA: Face swap é aplicado EM BATCH depois de gerar todas as cenas!
-    
-    Args:
-        prompt: Prompt em inglês descrevendo a cena
-        scene_number: Número da scene
-        style: Estilo visual (realistic, cinematic, anime, etc)
-        aspect_ratio: Proporção da imagem (16:9, 9:16, 1:1, 4:3)
-        resolution: Qualidade (720p, 1080p)
-        reference_image_path: Caminho da imagem de referência (para image-to-image)
-        job_id: ID do job
-    
-    Returns:
-        dict com: success, image_path, image_url, r2_url
+    Gera uma imagem para uma cena.
+
+    COM referência  → Kling IMAGE 2.1 (Single Reference, Character Features)
+    SEM referência  → Stability AI SD3.5 (text-to-image)
     """
-    
+
+    # ── COM REFERÊNCIA: Kling IMAGE 2.1 ──────────────────────────
+    if reference_image_path and os.path.exists(reference_image_path):
+        print(f"\n🎨 Generating scene {scene_number} [{aspect_ratio}, {resolution}, {style}]")
+        print(f"   Mode: Kling IMAGE 2.1 (Single Reference — Character Features)")
+
+        ref_url = reference_imgbb_url  # Usa URL já upada se disponível
+
+        if not ref_url:
+            print(f"   📤 Fazendo upload da referência para imgbb...")
+            ref_url = _rehost_imgbb(reference_image_path, f"clipvox_ref_{job_id}")
+
+        if not ref_url:
+            print(f"   ⚠️ Falha no imgbb — usando Stability AI como fallback")
+            return _generate_stability(prompt, scene_number, style, aspect_ratio,
+                                       resolution, reference_image_path, job_id)
+
+        kling_url = _generate_kling_image(
+            prompt=prompt,
+            reference_url=ref_url,
+            aspect_ratio=aspect_ratio,
+            style=style,
+            scene_number=scene_number
+        )
+
+        if not kling_url:
+            print(f"   ⚠️ Kling falhou — usando Stability AI como fallback")
+            return _generate_stability(prompt, scene_number, style, aspect_ratio,
+                                       resolution, reference_image_path, job_id)
+
+        # Baixar imagem gerada pelo Kling e fazer upload pro R2
+        return _download_and_upload(kling_url, scene_number, job_id, aspect_ratio, resolution,
+                                     mode="kling-single-reference")
+
+    # ── SEM REFERÊNCIA: Stability AI ─────────────────────────────
+    return _generate_stability(prompt, scene_number, style, aspect_ratio,
+                                resolution, None, job_id)
+
+
+# ═══════════════════════════════════════════════════════════════
+# STABILITY AI (text-to-image ou image-to-image)
+# ═══════════════════════════════════════════════════════════════
+def _generate_stability(
+    prompt, scene_number, style, aspect_ratio, resolution,
+    reference_image_path, job_id
+) -> dict:
     if not STABILITY_API_KEY:
-        print("⚠️ STABILITY_API_KEY not set, using placeholder")
         return _generate_placeholder_image(scene_number, prompt)
-    
+
     try:
-        # ─── Stability AI API Config ──────────────────────────
-        url = "https://api.stability.ai/v2beta/stable-image/generate/sd3"
-        
-        # Pegar prefix do estilo
+        url          = "https://api.stability.ai/v2beta/stable-image/generate/sd3"
         style_config = VISUAL_STYLES.get(style, VISUAL_STYLES["realistic"])
-        style_prefix = style_config["prefix"]
-        
-        enriched_prompt = f"{style_prefix}, {prompt}"
-        
-        # ─── Base Payload ──────────────────────────────────────
+        enriched     = f"{style_config['prefix']}, {prompt}"
+
         payload = {
-            "prompt": enriched_prompt,
+            "prompt":        enriched,
             "output_format": "jpeg",
-            "model": "sd3.5-large",
+            "model":         "sd3.5-large",
         }
-        
-        # Se tem imagem de referência, redimensiona e usa image-to-image
+
+        mode  = "text-to-image"
         files = {"none": ''}
-        mode = "text-to-image"
-        
+
         if reference_image_path and os.path.exists(reference_image_path):
-            print(f"🖼️ Using reference image for scene {scene_number}")
-            
-            # Redimensionar imagem ANTES de enviar
-            resized_image_path = resize_image_to_aspect_ratio(
-                reference_image_path,
-                aspect_ratio,
-                resolution
-            )
-            
-            # Ler imagem redimensionada
-            with open(resized_image_path, 'rb') as f:
+            resized = resize_image_to_aspect_ratio(reference_image_path, aspect_ratio, resolution)
+            with open(resized, 'rb') as f:
                 files = {"image": f.read()}
-            
             mode = "image-to-image"
-            payload["mode"] = "image-to-image"
+            payload["mode"]     = "image-to-image"
             payload["strength"] = 0.7
-            
         else:
-            # SÓ envia aspect_ratio quando NÃO tem reference image
             payload["aspect_ratio"] = aspect_ratio
-        
+
         headers = {
             "Authorization": f"Bearer {STABILITY_API_KEY}",
-            "Accept": "application/json"
+            "Accept":        "application/json"
         }
-        
-        # ─── Fazer Request ────────────────────────────────────
+
         print(f"🎨 Generating scene {scene_number} [{aspect_ratio}, {resolution}, {style}]")
-        if reference_image_path:
-            print(f"   With reference image: {os.path.basename(reference_image_path)}")
-            print(f"   Mode: image-to-image (aspect_ratio inherited from image)")
-        else:
-            print(f"   Mode: text-to-image (aspect_ratio in payload)")
-        
-        # Prepare files for request
+        print(f"   Mode: {mode} (aspect_ratio {'in payload' if mode == 'text-to-image' else 'inherited from image'})")
+
         request_files = {"none": ''} if mode == "text-to-image" else {"image": files["image"]}
-        
-        response = requests.post(
-            url,
-            headers=headers,
-            files=request_files,
-            data=payload,
-            timeout=60
-        )
-        
+        response = requests.post(url, headers=headers, files=request_files, data=payload, timeout=60)
+
         if response.status_code != 200:
-            print(f"❌ Stability AI error: {response.status_code} - {response.text}")
+            print(f"❌ Stability AI error: {response.status_code}")
             return _generate_placeholder_image(scene_number, prompt)
-        
-        # ─── Salvar Localmente (Temporário) ───────────────────
+
         data = response.json()
-        
-        if "image" in data:
-            image_data = base64.b64decode(data["image"])
-        else:
-            print(f"❌ No image in response: {data}")
+        if "image" not in data:
             return _generate_placeholder_image(scene_number, prompt)
-        
-        # Salvar temporariamente
-        filename = f"scene_{scene_number:03d}.jpg"
+
+        image_data = base64.b64decode(data["image"])
+        filename   = f"scene_{scene_number:03d}.jpg"
         local_path = os.path.join(UPLOAD_DIR, filename)
-        
         with open(local_path, "wb") as f:
             f.write(image_data)
-        
-        # ─── Upload pro R2 ────────────────────────────────────
+
         r2_key = f"jobs/{job_id}/{filename}" if job_id else f"scenes/{filename}"
         r2_url = upload_to_r2(local_path, r2_key)
-        
+
         print(f"✅ Scene {scene_number} generated and uploaded")
-        
         return {
-            "success": True,
-            "scene_number": scene_number,
+            "success": True, "scene_number": scene_number,
             "image_path": local_path,
-            "image_url": r2_url or f"/api/files/{filename}",
-            "r2_url": r2_url,
-            "prompt_used": enriched_prompt[:100],
-            "mode": mode,
-            "aspect_ratio": aspect_ratio,
-            "resolution": resolution
+            "image_url":  r2_url or f"/api/files/{filename}",
+            "r2_url":     r2_url,
+            "prompt_used": enriched[:100],
+            "mode": mode, "aspect_ratio": aspect_ratio, "resolution": resolution
         }
-        
-    except requests.exceptions.Timeout:
-        print(f"⏱️ Timeout generating scene {scene_number}")
-        return _generate_placeholder_image(scene_number, prompt)
-    
+
     except Exception as e:
-        print(f"❌ Error generating scene {scene_number}: {e}")
+        print(f"❌ Stability error scene {scene_number}: {e}")
         return _generate_placeholder_image(scene_number, prompt)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# PLACEHOLDER IMAGE (quando API falha)
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# DOWNLOAD KLING IMAGE + UPLOAD R2
+# ═══════════════════════════════════════════════════════════════
+def _download_and_upload(img_url, scene_number, job_id, aspect_ratio, resolution, mode) -> dict:
+    try:
+        r = requests.get(img_url, timeout=60)
+        if r.status_code != 200:
+            return _generate_placeholder_image(scene_number, "")
+
+        filename   = f"scene_{scene_number:03d}.jpg"
+        local_path = os.path.join(UPLOAD_DIR, filename)
+        with open(local_path, "wb") as f:
+            f.write(r.content)
+
+        r2_key = f"jobs/{job_id}/{filename}" if job_id else f"scenes/{filename}"
+        r2_url = upload_to_r2(local_path, r2_key)
+
+        print(f"✅ Scene {scene_number} generated and uploaded")
+        return {
+            "success": True, "scene_number": scene_number,
+            "image_path": local_path,
+            "image_url":  r2_url or img_url,
+            "r2_url":     r2_url,
+            "prompt_used": "",
+            "mode": mode, "aspect_ratio": aspect_ratio, "resolution": resolution
+        }
+    except Exception as e:
+        print(f"❌ Download/upload error scene {scene_number}: {e}")
+        return _generate_placeholder_image(scene_number, "")
+
+
+# ═══════════════════════════════════════════════════════════════
+# PLACEHOLDER
+# ═══════════════════════════════════════════════════════════════
 def _generate_placeholder_image(scene_number: int, prompt: str) -> dict:
-    """Gera uma imagem placeholder quando a API falha"""
-    
-    placeholder_text = f"Scene {scene_number}\n{prompt[:50]}..."
-    
-    # Criar imagem simples com PIL
-    img = Image.new('RGB', (1280, 720), color=(40, 40, 50))
-    
+    img      = Image.new('RGB', (1280, 720), color=(40, 40, 50))
     filename = f"scene_{scene_number:03d}_placeholder.jpg"
     local_path = os.path.join(UPLOAD_DIR, filename)
     img.save(local_path)
-    
     return {
-        "success": False,
-        "scene_number": scene_number,
+        "success": False, "scene_number": scene_number,
         "image_path": local_path,
-        "image_url": f"/api/files/{filename}",
-        "r2_url": None,
-        "prompt_used": prompt[:100],
-        "mode": "placeholder",
-        "aspect_ratio": "16:9",
-        "resolution": "720p"
+        "image_url":  f"/api/files/{filename}",
+        "r2_url":     None, "prompt_used": prompt[:100],
+        "mode": "placeholder", "aspect_ratio": "16:9", "resolution": "720p"
     }
 
 
-# ═══════════════════════════════════════════════════════════════════
-# GENERATE SCENES BATCH (processa múltiplas scenes)
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# GENERATE SCENES BATCH
+# ═══════════════════════════════════════════════════════════════
 def generate_scenes_batch(
     scenes: list,
     style: str = "realistic",
@@ -357,34 +433,36 @@ def generate_scenes_batch(
     job_id: str = ""
 ) -> list:
     """
-    Gera imagens para múltiplas scenes em batch
-    🎭 NOVO: Aplica face swap EM BATCH após gerar todas as cenas (PiAPI)
-    
-    Args:
-        scenes: Lista de scenes [{scene_number, prompt, ...}]
-        style: Estilo visual
-        aspect_ratio: Proporção da imagem
-        resolution: Qualidade
-        reference_image_path: Caminho da imagem de referência (🎭 para face swap!)
-        job_id: ID do job
-    
-    Returns:
-        Lista de dicts com resultados de cada scene
+    Gera imagens para múltiplas cenas em batch.
+
+    COM referência → Kling IMAGE 2.1 para TODAS as cenas
+                     Faz o upload da referência UMA VEZ só para o imgbb
+    SEM referência → Stability AI para todas as cenas
     """
-    
     results = []
     successful_count = 0
-    
-    print(f"🎨 Generating {len(scenes)} scene images with Stability AI...")
+
+    print(f"\n🎨 Generating {len(scenes)} scene images...")
     print(f"   Style: {style}")
     print(f"   Aspect Ratio: {aspect_ratio}")
     print(f"   Resolution: {resolution}")
-    if reference_image_path:
-        print(f"   Reference Image: {os.path.basename(reference_image_path)}")
-    
+
+    # ── Se tem referência: faz upload imgbb UMA VEZ ──────────────
+    reference_imgbb_url = None
+    if reference_image_path and os.path.exists(reference_image_path):
+        print(f"   🎭 Reference Image: {os.path.basename(reference_image_path)}")
+        print(f"   📤 Uploading reference to imgbb (uma vez para todas as cenas)...")
+        reference_imgbb_url = _rehost_imgbb(reference_image_path, f"clipvox_ref_{job_id}")
+        if reference_imgbb_url:
+            print(f"   ✅ Referência pronta: {reference_imgbb_url}")
+            print(f"   🎨 Modo: Kling IMAGE 2.1 (Single Reference — Character Features)")
+        else:
+            print(f"   ⚠️ imgbb falhou — usando Stability AI image-to-image como fallback")
+    else:
+        print(f"   Mode: Stability AI text-to-image")
+
     print("📤 Uploading to CloudFlare R2...")
-    
-    # ─── STEP 1: Gerar TODAS as cenas ─────────────────────────
+
     for scene in scenes:
         result = generate_scene_image(
             prompt=scene["prompt"],
@@ -392,54 +470,18 @@ def generate_scenes_batch(
             style=style,
             aspect_ratio=aspect_ratio,
             resolution=resolution,
-            reference_image_path=reference_image_path,  # Para image-to-image
+            reference_image_path=reference_image_path,
+            reference_imgbb_url=reference_imgbb_url,  # ← passa URL já upada
             job_id=job_id
         )
-        
+
         if result["success"]:
             successful_count += 1
-        
         results.append(result)
-    
+
+        # Delay entre cenas com Kling para evitar rate limit
+        if reference_imgbb_url and scene != scenes[-1]:
+            time.sleep(3)
+
     print(f"✅ Generated {successful_count}/{len(scenes)} scenes successfully")
-    
-    # ─── STEP 2: Aplicar FACE SWAP em BATCH (PiAPI) ───────────
-    if reference_image_path and os.path.exists(reference_image_path):
-        print(f"\n🎭 Applying face swap to all scenes using PiAPI...")
-        
-        # Coletar caminhos das imagens geradas
-        scene_images = [result["image_path"] for result in results if result["success"]]
-        
-        if scene_images:
-            # Aplicar face swap em batch (mais eficiente!)
-            swapped_images = face_swap_batch(
-                scene_images=scene_images,
-                reference_face_path=reference_image_path
-            )
-            
-            # Atualizar results com imagens com face swap
-            swap_index = 0
-            for i, result in enumerate(results):
-                if result["success"]:
-                    swapped_path = swapped_images[swap_index]
-                    swap_index += 1
-                    
-                    # Se face swap funcionou (path diferente)
-                    if swapped_path != result["image_path"]:
-                        # Upload da imagem com face swap pro R2
-                        filename = os.path.basename(swapped_path)
-                        r2_key = f"jobs/{job_id}/{filename}" if job_id else f"scenes/{filename}"
-                        r2_url = upload_to_r2(swapped_path, r2_key)
-                        
-                        # Atualizar result
-                        results[i]["image_path"] = swapped_path
-                        results[i]["image_url"] = r2_url or f"/api/files/{filename}"
-                        results[i]["r2_url"] = r2_url
-                        results[i]["face_swap_applied"] = True
-                    else:
-                        results[i]["face_swap_applied"] = False
-            
-            face_swap_count = sum(1 for r in results if r.get("face_swap_applied"))
-            print(f"🎭 Face swap completed: {face_swap_count}/{len(scene_images)} scenes")
-    
     return results
