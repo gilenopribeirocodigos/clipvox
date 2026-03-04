@@ -4,13 +4,12 @@
 Gera vídeo com sincronização labial usando Kling AI.
 
 FLUXO:
-  foto do personagem (ou vídeo) + áudio da música
+  foto do personagem (imgbb) + áudio da música (Cloudflare R2)
         ↓
   Kling AI Lip Sync
         ↓
   vídeo do personagem cantando sincronizado
 
-Endpoint: POST /v1/videos/lip-sync
 Auth: JWT (mesmo padrão do kling_video.py)
 """
 
@@ -21,16 +20,19 @@ import requests
 import jwt
 from typing import Optional
 
-# ── Configurações (reutiliza as mesmas variáveis do kling_video.py) ───────────
+from config import (
+    R2_BUCKET_NAME,
+    R2_PUBLIC_URL,
+    get_r2_client,
+    UPLOAD_DIR,
+)
+
 KLING_ACCESS_KEY = os.getenv("KLING_ACCESS_KEY", "")
 KLING_SECRET_KEY = os.getenv("KLING_SECRET_KEY", "")
 KLING_API_BASE   = "https://api.klingai.com"
 IMGBB_KEY        = os.getenv("IMGBB_API_KEY", "")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# AUTH JWT (igual ao kling_video.py)
-# ─────────────────────────────────────────────────────────────────────────────
 def _get_jwt_token() -> str:
     if not KLING_ACCESS_KEY or not KLING_SECRET_KEY:
         raise ValueError("KLING_ACCESS_KEY e KLING_SECRET_KEY são obrigatórios")
@@ -50,53 +52,73 @@ def _auth_headers() -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# UPLOAD IMAGEM/ÁUDIO PARA IMGBB (URL pública para o Kling consumir)
-# ─────────────────────────────────────────────────────────────────────────────
-def _upload_to_imgbb(file_path: str, label: str = "file") -> Optional[str]:
-    """Faz upload de qualquer arquivo binário para imgbb e retorna URL pública."""
+# ── imgbb → apenas imagens ────────────────────────────────────────────────────
+def _upload_image_to_imgbb(image_path: str) -> Optional[str]:
     if not IMGBB_KEY:
-        print(f"   ⚠️ IMGBB_API_KEY não configurada — não foi possível hospedar {label}")
+        print("   ⚠️ IMGBB_API_KEY não configurada")
         return None
     try:
-        with open(file_path, "rb") as f:
+        with open(image_path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
         resp = requests.post(
             f"https://api.imgbb.com/1/upload?key={IMGBB_KEY}",
-            data={"image": b64, "name": f"clipvox_{label}_{int(time.time())}"},
+            data={"image": b64, "name": f"clipvox_face_{int(time.time())}"},
             timeout=60
         )
         if resp.status_code == 200:
             url = resp.json().get("data", {}).get("url")
             if url:
                 time.sleep(2)
-                print(f"   ✅ imgbb {label}: {url}")
+                print(f"   ✅ imgbb face: {url}")
                 return url
-        print(f"   ❌ imgbb falhou ({label}): HTTP {resp.status_code}")
+        print(f"   ❌ imgbb falhou: HTTP {resp.status_code}")
         return None
     except Exception as e:
-        print(f"   ❌ imgbb erro ({label}): {e}")
+        print(f"   ❌ imgbb erro: {e}")
         return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CRIAR TASK DE LIP SYNC
-# ─────────────────────────────────────────────────────────────────────────────
-def create_lipsync_task(
-    video_url:  str,          # URL do vídeo/imagem do personagem
-    audio_url:  str,          # URL do áudio (mp3/wav)
-    model:      str = "kling-v1-6",
-) -> Optional[str]:
-    """
-    Envia requisição de lip sync para a Kling AI.
-    Retorna o task_id ou None se falhar.
-    
-    - video_url : URL pública do vídeo (ou imagem) com o rosto do personagem
-    - audio_url : URL pública do áudio da música
-    """
+# ── R2 → áudio (imgbb NÃO aceita áudio) ──────────────────────────────────────
+def _upload_audio_to_r2(audio_path: str, job_id: str = "") -> Optional[str]:
+    try:
+        r2_client = get_r2_client()
+        if not r2_client:
+            print("   ❌ R2 não configurado")
+            return None
+
+        filename = os.path.basename(audio_path)
+        ext      = filename.rsplit(".", 1)[-1].lower()
+        r2_key   = f"audio/{job_id}/{filename}" if job_id else f"audio/{filename}"
+
+        content_types = {
+            "mp3": "audio/mpeg", "wav": "audio/wav",
+            "ogg": "audio/ogg",  "m4a": "audio/mp4",
+            "aac": "audio/aac",  "flac": "audio/flac",
+        }
+        content_type = content_types.get(ext, "audio/mpeg")
+
+        print(f"   📤 Upload áudio → R2: {filename}")
+        with open(audio_path, "rb") as f:
+            r2_client.put_object(
+                Bucket=R2_BUCKET_NAME,
+                Key=r2_key,
+                Body=f,
+                ContentType=content_type,
+            )
+
+        public_url = f"{R2_PUBLIC_URL}/{r2_key}"
+        print(f"   ✅ Áudio no R2: {public_url}")
+        return public_url
+
+    except Exception as e:
+        print(f"   ❌ Erro upload áudio R2: {e}")
+        return None
+
+
+def create_lipsync_task(video_url: str, audio_url: str, model: str = "kling-v1-6") -> Optional[str]:
     print(f"\n🎤 Criando task de Lip Sync...")
-    print(f"   Personagem: {video_url[:80]}")
-    print(f"   Áudio:      {audio_url[:80]}")
+    print(f"   Personagem : {video_url[:80]}")
+    print(f"   Áudio      : {audio_url[:80]}")
 
     if not KLING_ACCESS_KEY:
         print("   ❌ KLING_ACCESS_KEY não configurada")
@@ -105,9 +127,9 @@ def create_lipsync_task(
     payload = {
         "model_name": model,
         "input": {
-            "video":      video_url,   # rosto do personagem
-            "voice":      audio_url,   # música
-            "voice_type": "audio",     # "audio" = URL de áudio; "text" = TTS
+            "video":      video_url,
+            "voice":      audio_url,
+            "voice_type": "audio",
         }
     }
 
@@ -130,18 +152,11 @@ def create_lipsync_task(
         return task_id
 
     except Exception as e:
-        print(f"   ❌ Exceção ao criar task: {e}")
+        print(f"   ❌ Exceção: {e}")
         return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# POLLING ATÉ O VÍDEO FICAR PRONTO
-# ─────────────────────────────────────────────────────────────────────────────
 def poll_lipsync_task(task_id: str, timeout: int = 600) -> Optional[str]:
-    """
-    Verifica periodicamente o status da task.
-    Retorna a URL do vídeo final quando pronto, ou None.
-    """
     print(f"   ⏳ Polling lip sync {task_id}...")
 
     for elapsed in range(10, timeout + 1, 10):
@@ -183,52 +198,47 @@ def poll_lipsync_task(task_id: str, timeout: int = 600) -> Optional[str]:
     return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FUNÇÃO PRINCIPAL — gera lip sync de uma imagem/vídeo + áudio
-# ─────────────────────────────────────────────────────────────────────────────
 def generate_lipsync(
-    face_source:     str,           # caminho LOCAL ou URL pública do rosto/vídeo
-    audio_source:    str,           # caminho LOCAL ou URL pública do áudio
-    job_id:          str = "",
-    model:           str = "kling-v1-6",
-    max_retries:     int = 2,
+    face_source:  str,
+    audio_source: str,
+    job_id:       str = "",
+    model:        str = "kling-v1-6",
+    max_retries:  int = 2,
 ) -> dict:
     """
     Orquestra o lip sync completo:
-      1. Hospeda face_source no imgbb se for arquivo local
-      2. Hospeda audio_source no imgbb se for arquivo local
-      3. Cria a task de lip sync
-      4. Faz polling até o resultado
-      5. Baixa o vídeo resultante
-
-    Retorna dict com:
-      success       : bool
-      video_url     : URL do vídeo com lip sync
-      video_path    : caminho local do vídeo baixado (se disponível)
-      task_id       : ID da task Kling
-      error         : mensagem de erro (se falhou)
+      1. Imagem do rosto → imgbb  (só imagens)
+      2. Áudio           → R2     (imgbb não aceita áudio)
+      3. Cria task Kling → polling → baixa vídeo
     """
 
-    # ── Resolver URLs públicas ─────────────────────────────────────────────────
-    face_url  = face_source
-    audio_url = audio_source
-
+    # ── Imagem do rosto ───────────────────────────────────────────────────────
+    face_url = face_source
     if face_source and os.path.exists(face_source):
-        print(f"   📤 Hospedando imagem/vídeo do personagem...")
-        face_url = _upload_to_imgbb(face_source, "face")
+        print(f"   📤 Hospedando rosto no imgbb...")
+        face_url = _upload_image_to_imgbb(face_source)
         if not face_url:
-            return {"success": False, "error": "Falha ao hospedar imagem do personagem"}
+            return {"success": False, "error": "Falha ao hospedar imagem do personagem no imgbb"}
 
+    # ── Áudio via R2 ──────────────────────────────────────────────────────────
+    audio_url = audio_source
     if audio_source and os.path.exists(audio_source):
-        print(f"   📤 Hospedando áudio...")
-        audio_url = _upload_to_imgbb(audio_source, "audio")
+        print(f"   📤 Hospedando áudio no Cloudflare R2...")
+        audio_url = _upload_audio_to_r2(audio_source, job_id)
         if not audio_url:
-            return {"success": False, "error": "Falha ao hospedar áudio"}
+            return {
+                "success": False,
+                "error": (
+                    "Falha ao hospedar áudio no R2. "
+                    "Verifique R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, "
+                    "R2_ENDPOINT_URL e R2_PUBLIC_URL nas variáveis de ambiente."
+                )
+            }
 
     if not face_url or not audio_url:
         return {"success": False, "error": "face_source e audio_source são obrigatórios"}
 
-    # ── Tentativas com retry ───────────────────────────────────────────────────
+    # ── Tentativas ────────────────────────────────────────────────────────────
     for attempt in range(1, max_retries + 1):
         print(f"\n🎤 Lip Sync — Tentativa {attempt}/{max_retries}")
 
@@ -245,7 +255,6 @@ def generate_lipsync(
         result_url = poll_lipsync_task(task_id)
 
         if result_url:
-            # Baixa localmente
             local_path = _download_lipsync_video(result_url, job_id)
             return {
                 "success":    True,
@@ -265,23 +274,16 @@ def generate_lipsync(
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DOWNLOAD DO VÍDEO RESULTANTE
-# ─────────────────────────────────────────────────────────────────────────────
 def _download_lipsync_video(video_url: str, job_id: str) -> Optional[str]:
     try:
-        from config import UPLOAD_DIR
         resp = requests.get(video_url, timeout=120, stream=True)
         if resp.status_code != 200:
             return None
-
         filename   = f"lipsync_{job_id}.mp4" if job_id else f"lipsync_{int(time.time())}.mp4"
         local_path = os.path.join(UPLOAD_DIR, filename)
-
         with open(local_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=8192):
                 f.write(chunk)
-
         print(f"   💾 Lip sync salvo: {local_path}")
         return local_path
     except Exception as e:
