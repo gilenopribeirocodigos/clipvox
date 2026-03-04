@@ -11,6 +11,7 @@ from services.ai_concept import generate_creative_concept_with_prompts
 from services.video_generation import generate_scenes_batch
 from services.kling_video import generate_videos_batch
 from services.merge_video import merge_clips_with_audio, MERGE_OUTPUT_DIR
+from services.kling_lipsync import generate_lipsync   # ← LIP SYNC
 
 router   = APIRouter()
 jobs_db  = {}
@@ -81,6 +82,9 @@ async def generate_video(
         "videos_status":  "pending",
         "merge_status":   None,
         "merge_url":      None,
+        # ── Lip Sync ──────────────────────────────────────────
+        "lipsync_status": None,
+        "lipsync_url":    None,
     }
 
     background_tasks.add_task(process_video_pipeline, job_id)
@@ -124,6 +128,9 @@ async def get_job_status(job_id: str):
         "videos_status":    job.get("videos_status"),
         "merge_status":     job.get("merge_status"),
         "merge_url":        job.get("merge_url"),
+        # ── Lip Sync ──────────────────────────────────────────
+        "lipsync_status":   job.get("lipsync_status"),
+        "lipsync_url":      job.get("lipsync_url"),
         "config": {
             "duration":            job.get("duration"),
             "aspect_ratio":        job.get("aspect_ratio"),
@@ -190,6 +197,89 @@ async def merge_final_video(job_id: str, background_tasks: BackgroundTasks):
         "status":  "processing",
         "message": f"Iniciando merge de {len(successful)} clipes + áudio...",
         "clips":   len(successful)
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# POST /lipsync/{job_id}
+# ───────────────────────────────────────────────────────────────
+# Gera vídeo com sincronização labial: o personagem move os
+# lábios sincronizado com o áudio da música do job.
+#
+# Parâmetros (form-data) — pelo menos um dos três é obrigatório:
+#   face_image : upload de imagem/vídeo do personagem
+#   face_url   : URL pública alternativa
+#   (sem nenhum) → usa a ref_image enviada no /generate
+#
+# model : modelo Kling (padrão: kling-v1-6)
+# ═══════════════════════════════════════════════════════════════
+@router.post("/lipsync/{job_id}")
+async def generate_lipsync_video(
+    job_id:           str,
+    background_tasks: BackgroundTasks,
+    face_image:       Optional[UploadFile] = File(None),
+    face_url:         str                  = Form(""),
+    model:            str                  = Form("kling-v1-6"),
+):
+    if job_id not in jobs_db:
+        raise HTTPException(404, "Job not found")
+
+    job = jobs_db[job_id]
+
+    # ── Validar áudio disponível ──────────────────────────────────────────────
+    audio_path = job.get("audio_path")
+    if not audio_path or not os.path.exists(audio_path):
+        raise HTTPException(400, "Áudio do job não encontrado")
+
+    # ── Resolver fonte do rosto (prioridade: upload > url > ref_image) ────────
+    face_source = None
+
+    if face_image:
+        face_filename = f"{job_id}_lipsync_face_{face_image.filename}"
+        face_path     = os.path.join(UPLOAD_DIR, face_filename)
+        with open(face_path, "wb") as f:
+            f.write(await face_image.read())
+        face_source = face_path
+        print(f"✅ Rosto recebido via upload: {face_filename}")
+
+    elif face_url:
+        face_source = face_url
+        print(f"✅ Rosto recebido via URL: {face_url[:80]}")
+
+    elif job.get("ref_image_path") and os.path.exists(job["ref_image_path"]):
+        face_source = job["ref_image_path"]
+        print(f"✅ Reutilizando ref_image do job: {os.path.basename(face_source)}")
+
+    else:
+        raise HTTPException(
+            400,
+            "Nenhuma imagem do personagem encontrada. "
+            "Envie 'face_image' (arquivo), 'face_url' (URL pública) "
+            "ou inclua uma ref_image ao criar o job com /generate."
+        )
+
+    # ── Evitar processamento duplicado ────────────────────────────────────────
+    if job.get("lipsync_status") == "processing":
+        return {"message": "Lip sync já em andamento", "job_id": job_id}
+
+    jobs_db[job_id]["lipsync_status"] = "processing"
+    jobs_db[job_id]["lipsync_url"]    = None
+
+    background_tasks.add_task(
+        process_lipsync,
+        job_id=job_id,
+        face_source=face_source,
+        audio_path=audio_path,
+        model=model,
+    )
+
+    return {
+        "job_id":  job_id,
+        "status":  "processing",
+        "message": "Lip sync iniciado — o personagem será sincronizado com o áudio da música",
+        "face":    face_url if face_url else os.path.basename(face_source),
+        "audio":   os.path.basename(audio_path),
+        "model":   model,
     }
 
 
@@ -323,14 +413,11 @@ def process_merge(job_id: str):
 
         if result["success"]:
             jobs_db[job_id]["merge_status"] = "completed"
-
-            # Prioridade: URL do R2; fallback: endpoint de download local
             if result.get("output_url"):
                 jobs_db[job_id]["merge_url"] = result["output_url"]
                 print(f"✅ Merge concluído (R2): {result['output_url']}")
             else:
-                # Gera URL do endpoint de download deste servidor
-                backend_url = os.getenv("BACKEND_URL", "https://clipvox-backend.onrender.com")
+                backend_url  = os.getenv("BACKEND_URL", "https://clipvox-backend.onrender.com")
                 download_url = f"{backend_url}/api/videos/download/{job_id}"
                 jobs_db[job_id]["merge_url"] = download_url
                 print(f"✅ Merge concluído (download local): {download_url}")
@@ -342,6 +429,30 @@ def process_merge(job_id: str):
         import traceback; traceback.print_exc()
         jobs_db[job_id]["merge_status"] = "failed"
         jobs_db[job_id]["merge_error"]  = str(e)
+
+
+def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
+    """
+    Executa o lip sync em background.
+    Atualiza jobs_db[job_id] com lipsync_status e lipsync_url.
+    """
+    print(f"\n🎤 Iniciando lip sync — job {job_id}")
+
+    result = generate_lipsync(
+        face_source=face_source,
+        audio_source=audio_path,
+        job_id=job_id,
+        model=model,
+    )
+
+    if result["success"]:
+        jobs_db[job_id]["lipsync_status"] = "completed"
+        jobs_db[job_id]["lipsync_url"]    = result["video_url"]
+        print(f"✅ Lip sync concluído: {result['video_url'][:80]}")
+    else:
+        jobs_db[job_id]["lipsync_status"] = "failed"
+        jobs_db[job_id]["lipsync_error"]  = result.get("error", "Erro desconhecido")
+        print(f"❌ Lip sync falhou: {result.get('error')}")
 
 
 def update_job(job_id: str, **kwargs):
