@@ -146,6 +146,60 @@ def poll_kling_video(task_id: str, scene_number: int, timeout: int = 600) -> Opt
     return None
 
 
+def _upload_video_to_r2(video_path: str, scene_number: int, job_id: str) -> Optional[str]:
+    """Faz upload do vídeo para Cloudflare R2 para persistência."""
+    try:
+        import boto3
+        R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY_ID", "")
+        R2_SECRET_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
+        R2_ENDPOINT   = os.getenv("R2_ENDPOINT_URL", "")
+        R2_BUCKET     = os.getenv("R2_BUCKET_NAME", "clipvox-images")
+        R2_PUBLIC_URL = os.getenv("R2_PUBLIC_URL", "").rstrip("/")
+
+        if not all([R2_ACCESS_KEY, R2_SECRET_KEY, R2_ENDPOINT, R2_PUBLIC_URL]):
+            print("   ⚠️ R2 não configurado — vídeo salvo apenas localmente")
+            return None
+
+        r2 = boto3.client(
+            "s3",
+            endpoint_url=R2_ENDPOINT,
+            aws_access_key_id=R2_ACCESS_KEY,
+            aws_secret_access_key=R2_SECRET_KEY,
+        )
+        filename = f"clip_{scene_number:03d}.mp4"
+        r2_key   = f"jobs/{job_id}/{filename}"
+        with open(video_path, "rb") as f:
+            r2.put_object(Bucket=R2_BUCKET, Key=r2_key, Body=f, ContentType="video/mp4")
+        r2_url = f"{R2_PUBLIC_URL}/{r2_key}"
+        print(f"   ✅ Video no R2: {r2_url}")
+        return r2_url
+    except Exception as e:
+        print(f"   ⚠️ Erro upload R2: {e}")
+        return None
+
+
+def _download_video(video_url: str, scene_number: int, job_id: str) -> tuple:
+    """Baixa o vídeo, faz upload para R2. Retorna (local_path, r2_url)."""
+    try:
+        from config import UPLOAD_DIR
+        resp = requests.get(video_url, timeout=120, stream=True)
+        if resp.status_code != 200:
+            return None, None
+        filename   = f"clip_{scene_number:03d}.mp4"
+        local_path = os.path.join(UPLOAD_DIR, f"job_{job_id}_{filename}" if job_id else filename)
+        with open(local_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+        print(f"   Video salvo: {local_path}")
+
+        # Upload para R2 para persistência
+        r2_url = _upload_video_to_r2(local_path, scene_number, job_id)
+        return local_path, r2_url
+    except Exception as e:
+        print(f"   Erro ao baixar video: {e}")
+        return None, None
+
+
 def generate_video_clip(
     image_path: str,
     image_url: str,
@@ -181,38 +235,28 @@ def generate_video_clip(
         video_url = poll_kling_video(task_id, scene_number)
 
         if video_url:
-            local_path = _download_video(video_url, scene_number, job_id)
+            local_path, r2_url = _download_video(video_url, scene_number, job_id)
+            # Usa R2 URL se disponível, senão a URL original do Kling (expira, mas é o que temos)
+            final_url = r2_url or video_url
             return {
-                "success": True, "scene_number": scene_number,
-                "video_url": video_url, "video_path": local_path,
-                "task_id": task_id, "attempt": attempt,
+                "success":      True,
+                "scene_number": scene_number,
+                "video_url":    final_url,
+                "video_path":   local_path,
+                "task_id":      task_id,
+                "attempt":      attempt,
             }
 
         time.sleep(20 * attempt)
 
     return {
-        "success": False, "scene_number": scene_number,
-        "video_url": None, "video_path": None, "task_id": None,
-        "error": f"Falhou apos {max_retries} tentativas",
+        "success":      False,
+        "scene_number": scene_number,
+        "video_url":    None,
+        "video_path":   None,
+        "task_id":      None,
+        "error":        f"Falhou apos {max_retries} tentativas",
     }
-
-
-def _download_video(video_url: str, scene_number: int, job_id: str) -> Optional[str]:
-    try:
-        from config import UPLOAD_DIR
-        resp = requests.get(video_url, timeout=120, stream=True)
-        if resp.status_code != 200:
-            return None
-        filename   = f"clip_{scene_number:03d}.mp4"
-        local_path = os.path.join(UPLOAD_DIR, f"job_{job_id}_{filename}" if job_id else filename)
-        with open(local_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print(f"   Video salvo: {local_path}")
-        return local_path
-    except Exception as e:
-        print(f"   Erro ao baixar video: {e}")
-        return None
 
 
 def generate_video_clips_batch(
@@ -222,8 +266,8 @@ def generate_video_clips_batch(
     mode: str = "std",
     model: str = "kling-v1-6",
     job_id: str = "",
-    bpm: int = None,   # recebido pelo videos.py mas não usado aqui
-    **kwargs           # absorve qualquer outro argumento futuro
+    bpm: int = None,
+    **kwargs
 ) -> list:
     results = []
     successful_count = 0
