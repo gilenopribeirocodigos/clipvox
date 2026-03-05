@@ -432,14 +432,24 @@ def process_merge(job_id: str):
 
 
 def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
-    """
-    Executa o lip sync em background.
-    Atualiza jobs_db[job_id] com lipsync_status e lipsync_url.
-    """
     print(f"\n🎤 Iniciando lip sync — job {job_id}")
+    job = jobs_db.get(job_id, {})
+
+    # Kling lip sync exige VÍDEO MP4, não imagem JPG.
+    video_clips = job.get("video_clips") or []
+    successful_clips = [c for c in video_clips if c.get("success") and c.get("video_url")]
+
+    if successful_clips:
+        face_video_url = successful_clips[0]["video_url"]
+        print(f"   🎬 Usando video_clip como base: {face_video_url[:80]}")
+    else:
+        jobs_db[job_id]["lipsync_status"] = "failed"
+        jobs_db[job_id]["lipsync_error"]  = "Nenhum video_clip disponível. Gere os clipes primeiro."
+        print(f"❌ Lip sync falhou: sem video_clips disponíveis")
+        return
 
     result = generate_lipsync(
-        face_source=face_source,
+        face_source=face_video_url,
         audio_source=audio_path,
         job_id=job_id,
         model=model,
