@@ -127,7 +127,7 @@ def create_lipsync_task(video_url: str, audio_url: str, model: str = "kling-v1-6
     payload = {
         "model_name": model,
         "input": {
-            "video":      video_url,
+            "video_url":   video_url,
             "voice":      audio_url,
             "voice_type": "audio",
             "mode":       "audio2video",   # obrigatório pela API Kling lip sync
