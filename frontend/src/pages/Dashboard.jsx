@@ -290,7 +290,6 @@ function VideoClipCard({ clip, index }) {
   )
 }
 
-// ✅ FIX: VideoClipsPanel recebe onVideosCompleted para avisar o Dashboard
 function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
   const [videosStatus, setVideosStatus] = useState(null)
   const [videoClips,   setVideoClips]   = useState(null)
@@ -316,7 +315,6 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
           if (status.videos_status === 'completed' || status.videos_status === 'failed') {
             clearInterval(pollRef.current)
             setGenerating(false)
-            // ✅ Notifica o Dashboard que os vídeos foram concluídos
             if (onVideosCompleted) onVideosCompleted(status.video_clips)
           }
         } catch(e) { console.warn('Polling vídeos:', e) }
@@ -335,7 +333,7 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
       clearTimeout(tid)
       if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `Erro ${res.status}`) }
     } catch(err) {
-      if (err.name === 'AbortError') { return } // backend ainda pode estar processando
+      if (err.name === 'AbortError') { return }
       setError(err.message || 'Erro ao iniciar geração de vídeos')
       setGenerating(false); setVideosStatus(null)
     }
@@ -423,7 +421,179 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
   )
 }
 
-function MergePanel({ jobId, videoClips }) {
+// ══════════════════════════════════════════════════════════════════════════════
+// 🎤 LIP SYNC PANEL — NOVO COMPONENTE
+// ══════════════════════════════════════════════════════════════════════════════
+function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted }) {
+  const [status,   setStatus]   = useState(null) // null | 'processing' | 'completed' | 'failed'
+  const [lipUrl,   setLipUrl]   = useState(null)
+  const [error,    setError]    = useState(null)
+  const [model,    setModel]    = useState('kling-v1-6')
+  const [skipped,  setSkipped]  = useState(false)
+  const pollRef = useRef()
+
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [])
+
+  const handleStart = async () => {
+    setStatus('processing'); setError(null)
+    try {
+      const formData = new FormData()
+      formData.append('model', model)
+      const res = await fetch(`${API_URL}/api/videos/lipsync/${jobId}`, { method:'POST', body:formData })
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `Erro ${res.status}`) }
+
+      // Polling do status
+      pollRef.current = setInterval(async () => {
+        try {
+          const r = await fetch(`${API_URL}/api/videos/status/${jobId}`)
+          const s = await r.json()
+          if (s.lipsync_status === 'completed') {
+            clearInterval(pollRef.current)
+            setStatus('completed')
+            setLipUrl(s.lipsync_url)
+            if (onLipSyncCompleted) onLipSyncCompleted(s.lipsync_url)
+          } else if (s.lipsync_status === 'failed') {
+            clearInterval(pollRef.current)
+            setStatus('failed')
+            setError(s.lipsync_error || 'Lip sync falhou')
+          }
+        } catch(e) { console.warn('Polling lipsync:', e) }
+      }, 5000)
+    } catch(err) {
+      setError(err.message || 'Erro ao iniciar lip sync')
+      setStatus('failed')
+    }
+  }
+
+  const handleSkip = () => {
+    setSkipped(true)
+    if (onLipSyncCompleted) onLipSyncCompleted(null)
+  }
+
+  const successClips = (videoClips || []).filter(c => c.success && c.video_url)
+
+  // Se pulou ou concluiu, não mostra mais
+  if (skipped) return null
+
+  return (
+    <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(139,92,246,.25)', borderRadius:16, padding:24, marginTop:16, animation:'fadeUp .5s ease' }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+          <span style={{ fontSize:20 }}>🎤</span>
+          <div>
+            <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:15, letterSpacing:2, color:'#fff' }}>LIP SYNC — SINCRONIZAÇÃO DE FALA</div>
+            <div style={{ color:'#6b7280', fontSize:11, marginTop:1 }}>LALAL.AI + Kling AI · Vocals isolados → Boca sincronizada</div>
+          </div>
+        </div>
+        <div style={{ background:'rgba(139,92,246,.1)', border:'1px solid rgba(139,92,246,.3)', borderRadius:8, padding:'4px 12px', color:'#a78bfa', fontSize:11, fontWeight:600 }}>
+          ✨ Novo
+        </div>
+      </div>
+
+      {/* Info box explicativo */}
+      {!status && (
+        <div style={{ background:'rgba(139,92,246,.06)', border:'1px solid rgba(139,92,246,.15)', borderRadius:10, padding:'12px 16px', marginBottom:16 }}>
+          <div style={{ color:'#a78bfa', fontSize:12, fontWeight:600, marginBottom:6 }}>🧠 Como funciona:</div>
+          <div style={{ color:'#9ca3af', fontSize:12, lineHeight:1.8 }}>
+            1️⃣ LALAL.AI extrai <strong style={{color:'#fff'}}>apenas a voz</strong> da música (remove instrumentos)<br/>
+            2️⃣ Kling AI sincroniza a boca do personagem com a voz limpa<br/>
+            3️⃣ Resultado: <strong style={{color:'#fff'}}>lábios movendo em perfeita sincronia</strong> com a letra
+          </div>
+        </div>
+      )}
+
+      {!status && (
+        <>
+          {/* Seleção de modelo */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:16 }}>
+            {[
+              { value:'kling-v1-6', label:'Kling v1.6', desc:'Rápido · ~$0.28', quality:'Bom' },
+              { value:'kling-v2',   label:'Kling v2',   desc:'Melhor sync · ~$0.50', quality:'Excelente' }
+            ].map(m => (
+              <div key={m.value} onClick={() => setModel(m.value)}
+                style={{ padding:'12px 14px', borderRadius:12, cursor:'pointer', background: model===m.value ? 'rgba(139,92,246,.1)' : 'rgba(255,255,255,.03)', border: model===m.value ? '1px solid rgba(139,92,246,.4)' : '1px solid rgba(255,255,255,.07)', transition:'all .25s' }}>
+                <div style={{ color: model===m.value ? '#a78bfa' : '#fff', fontSize:13, fontWeight:600, marginBottom:2 }}>{m.label}</div>
+                <div style={{ color:'#a78bfa', fontSize:11, fontWeight:600, marginBottom:2 }}>{m.desc}</div>
+                <div style={{ color:'#6b7280', fontSize:10 }}>Qualidade: {m.quality}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ background:'rgba(139,92,246,.05)', border:'1px solid rgba(139,92,246,.12)', borderRadius:10, padding:'10px 14px', marginBottom:16 }}>
+            <div style={{ color:'#a78bfa', fontSize:11, fontWeight:600 }}>⏱️ TEMPO ESTIMADO</div>
+            <div style={{ color:'#6b7280', fontSize:11, marginTop:2 }}>LALAL.AI ~30s + Kling lip sync ~2-5min = <span style={{ color:'#fff', fontWeight:600 }}>~5-6 min no total</span></div>
+          </div>
+
+          {error && (<div style={{ background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.2)', borderRadius:8, padding:'10px 14px', marginBottom:16, color:'#ef4444', fontSize:12 }}>❌ {error}</div>)}
+
+          <button onClick={handleStart}
+            style={{ width:'100%', padding:'13px', background:'linear-gradient(135deg,#7c3aed,#6d28d9)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer', boxShadow:'0 4px 18px rgba(124,58,237,.3)', marginBottom:10, transition:'all .25s' }}
+            onMouseEnter={e => e.target.style.boxShadow='0 6px 24px rgba(124,58,237,.5)'}
+            onMouseLeave={e => e.target.style.boxShadow='0 4px 18px rgba(124,58,237,.3)'}>
+            🎤 Aplicar Lip Sync na Música
+          </button>
+
+          <button onClick={handleSkip}
+            style={{ width:'100%', padding:'10px', background:'transparent', color:'#4b5563', border:'1px solid rgba(255,255,255,.07)', borderRadius:10, fontSize:13, cursor:'pointer', transition:'all .25s' }}
+            onMouseEnter={e => { e.target.style.color='#9ca3af'; e.target.style.borderColor='rgba(255,255,255,.15)' }}
+            onMouseLeave={e => { e.target.style.color='#4b5563'; e.target.style.borderColor='rgba(255,255,255,.07)' }}>
+            Pular — ir direto para o Merge
+          </button>
+        </>
+      )}
+
+      {status === 'processing' && (
+        <div style={{ textAlign:'center', padding:'32px 0' }}>
+          <div style={{ width:44, height:44, margin:'0 auto 16px', border:'3px solid rgba(139,92,246,.2)', borderTop:'3px solid #7c3aed', borderRadius:'50%', animation:'spin .9s linear infinite' }} />
+          <div style={{ color:'#fff', fontSize:14, fontWeight:600, marginBottom:6 }}>Aplicando Lip Sync...</div>
+          <div style={{ color:'#6b7280', fontSize:12, marginBottom:8 }}>LALAL.AI extraindo vocals → Kling sincronizando lábios</div>
+          <div style={{ color:'#a78bfa', fontSize:11, animation:'pulse 1.5s ease infinite' }}>⏳ Aguarde ~5-6 minutos</div>
+        </div>
+      )}
+
+      {status === 'completed' && lipUrl && (
+        <div style={{ textAlign:'center', padding:'16px 0' }}>
+          <div style={{ fontSize:40, marginBottom:12 }}>🎤✨</div>
+          <div style={{ color:'#a78bfa', fontSize:16, fontWeight:700, marginBottom:6 }}>Lip Sync concluído!</div>
+          <div style={{ color:'#6b7280', fontSize:12, marginBottom:20 }}>Boca sincronizada com a voz da música</div>
+          <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap', marginBottom:16 }}>
+            <a href={lipUrl} target="_blank" rel="noreferrer"
+              style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'12px 24px', background:'linear-gradient(135deg,#7c3aed,#6d28d9)', color:'#fff', borderRadius:12, fontSize:14, fontWeight:600, textDecoration:'none' }}>
+              ▶ Ver Lip Sync
+            </a>
+            <a href={lipUrl} download={`lipsync_${jobId}.mp4`}
+              style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'12px 24px', background:'rgba(255,255,255,.07)', color:'#fff', border:'1px solid rgba(255,255,255,.15)', borderRadius:12, fontSize:14, fontWeight:600, textDecoration:'none' }}>
+              ⬇ Baixar
+            </a>
+          </div>
+          <div style={{ color:'#4b5563', fontSize:11 }}>Agora você pode fazer o Merge com o lip sync aplicado ↓</div>
+        </div>
+      )}
+
+      {status === 'failed' && (
+        <div style={{ textAlign:'center', padding:'24px' }}>
+          <div style={{ fontSize:32, marginBottom:10 }}>❌</div>
+          <div style={{ color:'#ef4444', fontSize:14, fontWeight:600, marginBottom:8 }}>Lip Sync falhou</div>
+          <div style={{ color:'#6b7280', fontSize:12, marginBottom:16 }}>{error || 'Erro desconhecido'}</div>
+          <div style={{ display:'flex', gap:8, justifyContent:'center' }}>
+            <button onClick={() => { setStatus(null); setError(null) }}
+              style={{ background:'rgba(139,92,246,.1)', color:'#a78bfa', border:'1px solid rgba(139,92,246,.3)', borderRadius:10, padding:'8px 20px', fontSize:13, cursor:'pointer' }}>
+              🔄 Tentar novamente
+            </button>
+            <button onClick={handleSkip}
+              style={{ background:'rgba(255,255,255,.06)', color:'#fff', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'8px 20px', fontSize:13, cursor:'pointer' }}>
+              Pular
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MergePanel({ jobId, videoClips, lipSyncUrl }) {
   const [mergeStatus, setMergeStatus] = useState(null)
   const [mergeUrl,    setMergeUrl]    = useState(null)
   const [mergeError,  setMergeError]  = useState(null)
@@ -431,23 +601,8 @@ function MergePanel({ jobId, videoClips }) {
   const pollRef = useRef()
 
   useEffect(() => {
-    if (mergeStatus === 'processing') {
-      pollRef.current = setInterval(async () => {
-        try {
-          const res    = await fetch(`${API_URL}/api/videos/status/${jobId}`)
-          const status = await res.json()
-          if (status.merge_status) setMergeStatus(status.merge_status)
-          if (status.merge_url)    setMergeUrl(status.merge_url)
-          if (status.merge_status === 'completed' || status.merge_status === 'failed') {
-            clearInterval(pollRef.current)
-            setLoading(false)
-            if (status.merge_status === 'failed') setMergeError('Merge falhou. Tente novamente.')
-          }
-        } catch(e) { console.warn('Polling merge:', e) }
-      }, 4000)
-    }
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [mergeStatus, jobId])
+  }, [])
 
   const successClips = (videoClips || []).filter(c => c.success && c.video_url)
 
@@ -457,6 +612,18 @@ function MergePanel({ jobId, videoClips }) {
     try {
       const res = await fetch(`${API_URL}/api/videos/merge/${jobId}`, { method:'POST' })
       if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `Erro ${res.status}`) }
+      pollRef.current = setInterval(async () => {
+        try {
+          const r = await fetch(`${API_URL}/api/videos/status/${jobId}`)
+          const s = await r.json()
+          if (s.merge_status) setMergeStatus(s.merge_status)
+          if (s.merge_url)    setMergeUrl(s.merge_url)
+          if (s.merge_status === 'completed' || s.merge_status === 'failed') {
+            clearInterval(pollRef.current); setLoading(false)
+            if (s.merge_status === 'failed') setMergeError('Merge falhou. Tente novamente.')
+          }
+        } catch(e) { console.warn('Polling merge:', e) }
+      }, 4000)
     } catch(err) {
       setMergeError(err.message || 'Erro ao iniciar merge')
       setLoading(false); setMergeStatus(null)
@@ -479,15 +646,13 @@ function MergePanel({ jobId, videoClips }) {
             <div style={{ color:'#22c55e', fontSize:12, fontWeight:600, marginBottom:4 }}>📋 O que será feito:</div>
             <div style={{ color:'#9ca3af', fontSize:12, lineHeight:1.8 }}>
               ✅ {successClips.length} clipes concatenados em ordem<br/>
-              🎵 Áudio original da música adicionado<br/>
+              {lipSyncUrl ? '🎤 Lip sync aplicado na cena principal' : '🎵 Áudio original da música adicionado'}<br/>
               📦 Vídeo final exportado em MP4
             </div>
           </div>
           {mergeError && (<div style={{ background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.2)', borderRadius:8, padding:'10px 14px', marginBottom:16, color:'#ef4444', fontSize:12 }}>❌ {mergeError}</div>)}
           <button onClick={handleMerge}
-            style={{ width:'100%', padding:'14px', background:'linear-gradient(135deg,#22c55e,#16a34a)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer', boxShadow:'0 4px 18px rgba(34,197,94,.3)', transition:'all .25s' }}
-            onMouseEnter={e => e.target.style.boxShadow='0 6px 24px rgba(34,197,94,.5)'}
-            onMouseLeave={e => e.target.style.boxShadow='0 4px 18px rgba(34,197,94,.3)'}>
+            style={{ width:'100%', padding:'14px', background:'linear-gradient(135deg,#22c55e,#16a34a)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer', boxShadow:'0 4px 18px rgba(34,197,94,.3)', transition:'all .25s' }}>
             🎬 Gerar Videoclipe Final
           </button>
         </>
@@ -509,7 +674,7 @@ function MergePanel({ jobId, videoClips }) {
           <div style={{ color:'#6b7280', fontSize:12, marginBottom:20 }}>Seu videoclipe foi gerado com sucesso</div>
           <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap' }}>
             <a href={mergeUrl} target="_blank" rel="noreferrer"
-              style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'12px 24px', background:'linear-gradient(135deg,#22c55e,#16a34a)', color:'#fff', borderRadius:12, fontSize:14, fontWeight:600, textDecoration:'none', boxShadow:'0 4px 18px rgba(34,197,94,.3)' }}>
+              style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'12px 24px', background:'linear-gradient(135deg,#22c55e,#16a34a)', color:'#fff', borderRadius:12, fontSize:14, fontWeight:600, textDecoration:'none' }}>
               ▶ Assistir Vídeo
             </a>
             <a href={mergeUrl} download={`clipvox_${jobId}.mp4`}
@@ -524,7 +689,6 @@ function MergePanel({ jobId, videoClips }) {
         <div style={{ textAlign:'center', padding:'24px' }}>
           <div style={{ fontSize:32, marginBottom:10 }}>❌</div>
           <div style={{ color:'#ef4444', fontSize:14, fontWeight:600, marginBottom:8 }}>Merge falhou</div>
-          <div style={{ color:'#6b7280', fontSize:12, marginBottom:16 }}>{mergeError || 'Erro desconhecido'}</div>
           <button onClick={() => { setMergeStatus(null); setMergeError(null) }}
             style={{ background:'rgba(255,255,255,.06)', color:'#fff', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'8px 20px', fontSize:13, cursor:'pointer' }}>
             🔄 Tentar novamente
@@ -590,8 +754,9 @@ export default function Dashboard({ onBack }) {
   const [jobStatus, setJobStatus] = useState(null)
   const [fileName, setFileName]   = useState('')
   const [serverReady, setServerReady] = useState(false)
-  // ✅ FIX: estado local para controlar exibição do MergePanel
   const [completedClips, setCompletedClips] = useState(null)
+  const [lipSyncDone,    setLipSyncDone]    = useState(false)
+  const [lipSyncUrl,     setLipSyncUrl]     = useState(null)
   const pollRef = useRef()
 
   useEffect(() => {
@@ -610,7 +775,7 @@ export default function Dashboard({ onBack }) {
   const startGeneration = async ({ file, desc, style, duration, aspectRatio, resolution, refImage }) => {
     try {
       setFileName(file.name); setPhase('processing'); setCredits(c => c - 100)
-      setCompletedClips(null)
+      setCompletedClips(null); setLipSyncDone(false); setLipSyncUrl(null)
       const formData = new FormData()
       formData.append('audio', file)
       formData.append('description', desc)
@@ -663,14 +828,18 @@ export default function Dashboard({ onBack }) {
 
   const reset = () => {
     if (pollRef.current) clearInterval(pollRef.current)
-    setPhase('upload'); setJobId(null); setJobStatus(null); setFileName(''); setCompletedClips(null)
+    setPhase('upload'); setJobId(null); setJobStatus(null); setFileName('')
+    setCompletedClips(null); setLipSyncDone(false); setLipSyncUrl(null)
   }
 
-  // ✅ FIX: callback chamado pelo VideoClipsPanel quando termina
   const handleVideosCompleted = (clips) => {
-    if (clips && clips.some(c => c.success)) {
-      setCompletedClips(clips)
-    }
+    if (clips && clips.some(c => c.success)) setCompletedClips(clips)
+  }
+
+  // Chamado pelo LipSyncPanel quando conclui OU quando usuário pula
+  const handleLipSyncCompleted = (url) => {
+    setLipSyncDone(true)
+    setLipSyncUrl(url || null)
   }
 
   if (phase === 'upload') {
@@ -716,16 +885,28 @@ export default function Dashboard({ onBack }) {
 
           {jobStatus?.status === 'completed' && jobId && (
             <>
+              {/* PASSO 1: Gerar clipes */}
               <VideoClipsPanel
                 jobId={jobId}
                 jobStatus={jobStatus}
                 onVideosCompleted={handleVideosCompleted}
               />
-              {/* ✅ FIX: aparece quando completedClips é setado pelo callback */}
-              {completedClips && completedClips.some(c => c.success) && (
+
+              {/* PASSO 2: Lip Sync (aparece após clipes prontos) */}
+              {completedClips && completedClips.some(c => c.success) && !lipSyncDone && (
+                <LipSyncPanel
+                  jobId={jobId}
+                  videoClips={completedClips}
+                  onLipSyncCompleted={handleLipSyncCompleted}
+                />
+              )}
+
+              {/* PASSO 3: Merge Final (aparece após lip sync concluir ou pular) */}
+              {completedClips && completedClips.some(c => c.success) && lipSyncDone && (
                 <MergePanel
                   jobId={jobId}
                   videoClips={completedClips}
+                  lipSyncUrl={lipSyncUrl}
                 />
               )}
             </>
