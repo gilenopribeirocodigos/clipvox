@@ -3,9 +3,11 @@
 Extrai apenas a voz da música, removendo instrumentos.
 Isso melhora drasticamente a qualidade do lip sync.
 
-CORREÇÃO: LALAL.AI exige upload raw binary com Content-Disposition como
-header HTTP — NÃO multipart/form-data. Erro anterior:
-"Required argument content-disposition not found"
+CORREÇÕES aplicadas:
+  1. Upload: raw binary com Content-Disposition como header HTTP
+     (NÃO multipart/form-data → causava "content-disposition not found")
+  2. Split: stem/splitter dentro de "params" no JSON
+     (root-level causava "Required argument params not found")
 """
 
 import os
@@ -29,34 +31,25 @@ def extract_vocals(audio_path: str, job_id: str = "") -> Optional[str]:
 
     print(f"🎵 LALAL.AI — extraindo vocals de: {os.path.basename(audio_path)}")
 
-    # ── 1. Upload do arquivo ──────────────────────────────────────────────────
     file_id = _upload_file(audio_path)
     if not file_id:
         return None
 
-    # ── 2. Iniciar separação (vocals + instrumental) ──────────────────────────
     task_id = _start_split(file_id)
     if not task_id:
         return None
 
-    # ── 3. Aguardar processamento ─────────────────────────────────────────────
     vocal_url = _poll_result(task_id)
     if not vocal_url:
         return None
 
-    # ── 4. Baixar o arquivo de vocals ─────────────────────────────────────────
-    vocal_path = _download_vocals(vocal_url, job_id)
-    return vocal_path
+    return _download_vocals(vocal_url, job_id)
 
 
 def _upload_file(audio_path: str) -> Optional[str]:
     """
-    Faz upload do áudio para o LALAL.AI. Retorna o file_id.
-
-    ✅ CORREÇÃO: LALAL.AI usa upload raw binary (não multipart/form-data).
-    O Content-Disposition deve ser um header HTTP normal, não um header
-    de parte multipart. O código anterior usava requests.files={} o que
-    gerava multipart — a API rejeitava com "content-disposition not found".
+    Upload raw binary com Content-Disposition como header HTTP.
+    NÃO usa multipart/form-data (requests.files).
     """
     try:
         print(f"   📤 Enviando para LALAL.AI (raw binary)...")
@@ -75,12 +68,11 @@ def _upload_file(audio_path: str) -> Optional[str]:
         resp = requests.post(
             f"{LALAL_API_BASE}/upload/",
             headers={
-                "Authorization":     f"license {LALAL_API_KEY}",
-                # ✅ Content-Disposition como header HTTP (não multipart)
+                "Authorization":      f"license {LALAL_API_KEY}",
                 "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Type":      content_type,
+                "Content-Type":        content_type,
             },
-            data=file_bytes,   # raw binary — NÃO files={}
+            data=file_bytes,
             timeout=120,
         )
         print(f"   📥 Upload HTTP {resp.status_code}: {resp.text[:200]}")
@@ -97,7 +89,10 @@ def _upload_file(audio_path: str) -> Optional[str]:
 
 
 def _start_split(file_id: str) -> Optional[str]:
-    """Inicia a separação vocal. Retorna o task_id."""
+    """
+    Inicia a separação vocal.
+    ✅ CORREÇÃO: stem/splitter dentro de "params" (não no root do JSON).
+    """
     try:
         print(f"   🔀 Iniciando separação vocal...")
         resp = requests.post(
@@ -107,9 +102,11 @@ def _start_split(file_id: str) -> Optional[str]:
                 "Content-Type":  "application/json",
             },
             json={
-                "id":       file_id,
-                "stem":     "vocals",    # extrai só vocals
-                "splitter": "phoenix",   # modelo de qualidade
+                "id": file_id,
+                "params": {              # ✅ CORRETO: dentro de "params"
+                    "stem":     "vocals",
+                    "splitter": "phoenix",
+                }
             },
             timeout=30,
         )
