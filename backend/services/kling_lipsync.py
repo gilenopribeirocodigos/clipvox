@@ -201,11 +201,23 @@ def create_lipsync_task(video_url: str, audio_url: str,
             json=payload,
             timeout=30,
         )
-        print(f"   📥 HTTP {resp.status_code}: {resp.text[:600]}")
+        print(f"   📥 HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
 
         if data.get("code") != 200:
-            print(f"   ❌ Erro PiAPI: {data.get('message')}")
+            # ✅ Extrai e imprime raw_message em linha separada (evita truncamento do Render)
+            raw_msg = (
+                data.get("data", {})
+                    .get("error", {})
+                    .get("raw_message", "")
+                or data.get("message", "sem mensagem")
+            )
+            print(f"   ❌ Erro PiAPI code: {data.get('code')}")
+            print(f"   ❌ message : {data.get('message')}")
+            print(f"   ❌ raw_message COMPLETO:")
+            # Divide em chunks de 200 chars para garantir que o Render não trunca
+            for i in range(0, len(raw_msg), 200):
+                print(f"      {raw_msg[i:i+200]}")
             return None
 
         task_id = data.get("data", {}).get("task_id")
