@@ -209,9 +209,9 @@ async def merge_final_video(job_id: str, background_tasks: BackgroundTasks):
 # Parâmetros (form-data) — pelo menos um dos três é obrigatório:
 #   face_image : upload de imagem/vídeo do personagem
 #   face_url   : URL pública alternativa
-#   (sem nenhum) → usa a ref_image enviada no /generate
+#   (sem nenhum) → usa o primeiro video_clip gerado no job
 #
-# model : modelo Kling (padrão: kling-v1-6)
+# model : modelo Kling (padrão: kling)
 # ═══════════════════════════════════════════════════════════════
 @router.post("/lipsync/{job_id}")
 async def generate_lipsync_video(
@@ -219,7 +219,7 @@ async def generate_lipsync_video(
     background_tasks: BackgroundTasks,
     face_image:       Optional[UploadFile] = File(None),
     face_url:         str                  = Form(""),
-    model:            str                  = Form("kling"),
+    model:            str                  = Form("kling"),   # ✅ CORRIGIDO: era "kling-v1-6"
 ):
     if job_id not in jobs_db:
         raise HTTPException(404, "Job not found")
@@ -379,7 +379,13 @@ def process_video_clips(job_id: str, mode: str = "std"):
         valid_scenes = [s for s in scenes if s.get("success", False) and s.get("image_url")]
         print(f"\n🎬 Gerando {len(valid_scenes)} clipes de vídeo (Kling/{mode})")
         print(f"   Job: {job_id} | BPM: {bpm:.0f} | AR: {aspect_ratio}")
-        video_results = generate_videos_batch(scenes=valid_scenes, bpm=bpm, aspect_ratio=aspect_ratio, mode=mode)
+        video_results = generate_videos_batch(
+            scenes=valid_scenes,
+            bpm=bpm,
+            aspect_ratio=aspect_ratio,
+            mode=mode,
+            job_id=job_id,   # ✅ CORRIGIDO: job_id estava faltando → causava "jobs//clip_001.mp4"
+        )
         success_count = sum(1 for r in video_results if r.get("success", False))
         print(f"✅ Clipes gerados: {success_count}/{len(valid_scenes)}")
         jobs_db[job_id]["video_clips"]   = video_results
@@ -432,7 +438,7 @@ def process_merge(job_id: str):
 
 
 def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
-    print(f"\n🎤 Iniciando lip sync — job {job_id}")
+    print(f"\n🎤 Iniciando lip sync — job {job_id} | model: {model}")
     job = jobs_db.get(job_id, {})
 
     # Kling lip sync exige VÍDEO MP4, não imagem JPG.
