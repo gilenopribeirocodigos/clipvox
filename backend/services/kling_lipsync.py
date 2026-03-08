@@ -1,44 +1,40 @@
 """
-🎤 ClipVox - Kling AI Lip Sync Service (v2 — com extração de vocals via LALAL.AI)
+🎤 ClipVox - Kling AI Lip Sync Service (via PiAPI)
 Fluxo:
   1. Extrai vocals da música com LALAL.AI (remove instrumentos)
-  2. Faz upload da imagem/vídeo do rosto para imgbb
-  3. Faz upload dos vocals para Cloudflare R2
-  4. Envia para a API do Kling lip sync
-  5. Faz polling até concluir
-  6. Retorna a URL do vídeo com lip sync
+  2. Faz upload dos vocals para Cloudflare R2
+  3. Envia para PiAPI (Kling lip sync)
+  4. Faz polling até concluir
+  5. Salva resultado no R2 e retorna a URL
+Auth: x-api-key (PIAPI_API_KEY)
 """
 
 import os
 import time
-import jwt
 import requests
 import boto3
 from typing import Optional
 
-KLING_ACCESS_KEY = os.getenv("KLING_ACCESS_KEY", "")
-KLING_SECRET_KEY = os.getenv("KLING_SECRET_KEY", "")
-KLING_API_BASE   = "https://api.klingai.com"
-IMGBB_KEY        = os.getenv("IMGBB_API_KEY", "")
-R2_ACCESS_KEY    = os.getenv("R2_ACCESS_KEY_ID", "")
-R2_SECRET_KEY    = os.getenv("R2_SECRET_ACCESS_KEY", "")
-R2_ENDPOINT      = os.getenv("R2_ENDPOINT_URL", "")
-R2_BUCKET_NAME   = os.getenv("R2_BUCKET_NAME", "clipvox-images")
-R2_PUBLIC_URL    = os.getenv("R2_PUBLIC_URL", "").rstrip("/")
+PIAPI_API_KEY  = os.getenv("PIAPI_API_KEY", "")
+PIAPI_BASE     = "https://api.piapi.ai"
+IMGBB_KEY      = os.getenv("IMGBB_API_KEY", "")
+R2_ACCESS_KEY  = os.getenv("R2_ACCESS_KEY_ID", "")
+R2_SECRET_KEY  = os.getenv("R2_SECRET_ACCESS_KEY", "")
+R2_ENDPOINT    = os.getenv("R2_ENDPOINT_URL", "")
+R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "clipvox-images")
+R2_PUBLIC_URL  = os.getenv("R2_PUBLIC_URL", "").rstrip("/")
 
 
 # ═══════════════════════════════════════════════════════════════
 # AUTH
 # ═══════════════════════════════════════════════════════════════
 def _auth_headers() -> dict:
-    payload = {
-        "iss": KLING_ACCESS_KEY,
-        "exp": int(time.time()) + 1800,
-        "nbf": int(time.time()) - 5,
+    if not PIAPI_API_KEY:
+        raise ValueError("PIAPI_API_KEY não configurada")
+    return {
+        "Content-Type": "application/json",
+        "x-api-key":    PIAPI_API_KEY,
     }
-    token = jwt.encode(payload, KLING_SECRET_KEY, algorithm="HS256",
-                       headers={"alg": "HS256", "typ": "JWT"})
-    return {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -105,77 +101,94 @@ def _upload_audio_to_r2(audio_path: str, job_id: str = "") -> Optional[str]:
 
 
 # ═══════════════════════════════════════════════════════════════
-# KLING LIP SYNC — criar task
+# PIAPI LIP SYNC — criar task
 # ═══════════════════════════════════════════════════════════════
 def create_lipsync_task(video_url: str, audio_url: str,
                         model: str = "kling-v1-6") -> Optional[str]:
-    print(f"🎤 Criando task de Lip Sync...")
-    print(f"   Personagem : {video_url[:80]}")
+    print(f"🎤 Criando task de Lip Sync via PiAPI...")
+    print(f"   Vídeo      : {video_url[:80]}")
     print(f"   Áudio      : {audio_url[:80]}")
 
+    # PiAPI: mesmo endpoint /api/v1/task, task_type "lip_sync"
     payload = {
-        "model_name": model,
+        "model":     model,
+        "task_type": "lip_sync",
         "input": {
-            "video_url":  video_url,
-            "voice":      audio_url,
-            "voice_type": "audio",
-            "mode":       "audio2video",
+            "video_url":         video_url,
+            "local_dubbing_url": audio_url,  # PiAPI usa local_dubbing_url (não "voice")
+            "tts_text":          "",
+            "tts_timbre":        "",
+            "tts_speed":         1,
         }
     }
+
     try:
         resp = requests.post(
-            f"{KLING_API_BASE}/v1/videos/lip-sync",
+            f"{PIAPI_BASE}/api/v1/task",
             headers=_auth_headers(),
             json=payload,
             timeout=30,
         )
         print(f"   📥 HTTP {resp.status_code}: {resp.text[:400]}")
         data = resp.json()
-        if data.get("code") != 0:
-            print(f"   ❌ Erro Kling: {data.get('message')}")
+
+        if data.get("code") != 200:
+            print(f"   ❌ Erro PiAPI: {data.get('message')}")
             return None
+
         task_id = data.get("data", {}).get("task_id")
         print(f"   ✅ Task criada: {task_id}")
         return task_id
     except Exception as e:
-        print(f"   ❌ Exceção Kling: {e}")
+        print(f"   ❌ Exceção PiAPI: {e}")
         return None
 
 
 # ═══════════════════════════════════════════════════════════════
-# KLING LIP SYNC — polling
+# PIAPI LIP SYNC — polling
 # ═══════════════════════════════════════════════════════════════
 def poll_lipsync_task(task_id: str, timeout: int = 600) -> Optional[str]:
     print(f"   ⏳ Aguardando lip sync (task {task_id})...")
+
     for elapsed in range(15, timeout + 1, 15):
         time.sleep(15)
         try:
             resp = requests.get(
-                f"{KLING_API_BASE}/v1/videos/lip-sync/{task_id}",
+                f"{PIAPI_BASE}/api/v1/task/{task_id}",
                 headers=_auth_headers(),
                 timeout=15,
             )
             data   = resp.json()
-            status = data.get("data", {}).get("task_status", "")
+            task   = data.get("data", {})
+            # PiAPI usa "status": pending | processing | completed | failed
+            status = task.get("status", "")
             print(f"   ⏳ Status: {status} ({elapsed}s)")
-            if status == "succeed":
-                videos = data.get("data", {}).get("task_result", {}).get("videos", [])
-                if videos:
-                    url = videos[0].get("url")
-                    print(f"   ✅ Lip sync pronto: {url[:80]}")
-                    return url
+
+            if status == "completed":
+                # URL em: data.output.works[0].video.resource
+                works = task.get("output", {}).get("works", [])
+                if works:
+                    url = works[0].get("video", {}).get("resource")
+                    if url:
+                        print(f"   ✅ Lip sync pronto: {url[:80]}")
+                        return url
+                print(f"   ❌ Nenhum vídeo no resultado")
                 return None
+
             elif status == "failed":
-                print(f"   ❌ Lip sync falhou: {data.get('data', {}).get('task_status_msg')}")
+                error = task.get("error", {}).get("message", "desconhecido")
+                print(f"   ❌ Lip sync falhou: {error}")
                 return None
+
         except Exception as e:
             print(f"   ⚠️ Polling erro: {e}")
+
     print(f"   ❌ Timeout ({timeout}s)")
     return None
 
 
 # ═══════════════════════════════════════════════════════════════
-# UPLOAD VIDEO LIP SYNC → R2
+# UPLOAD RESULTADO LIP SYNC → R2
 # ═══════════════════════════════════════════════════════════════
 def _upload_lipsync_to_r2(video_url: str, job_id: str) -> Optional[str]:
     try:
@@ -257,7 +270,6 @@ def generate_lipsync(
 
         video_url = poll_lipsync_task(task_id)
         if video_url:
-            # Salvar no R2 para persistência
             r2_url = _upload_lipsync_to_r2(video_url, job_id)
             return {
                 "success":   True,
