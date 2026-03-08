@@ -61,7 +61,7 @@ def create_kling_video_task(
     aspect_ratio: str = "16:9",
     duration: int = 5,
     mode: str = "std",
-    model: str = "kling-v1-6"
+    model: str = "kling"
 ) -> Optional[str]:
     print(f"\nCreating video task Scene {scene_number} | {model} | {mode} | {duration}s")
 
@@ -206,7 +206,7 @@ def generate_video_clip(
     aspect_ratio: str = "16:9",
     duration: int = 5,
     mode: str = "std",
-    model: str = "kling-v1-6",
+    model: str = "kling",
     job_id: str = "",
     max_retries: int = 3
 ) -> dict:
@@ -261,7 +261,7 @@ def generate_video_clips_batch(
     aspect_ratio: str = "16:9",
     duration: int = 5,
     mode: str = "std",
-    model: str = "kling-v1-6",
+    model: str = "kling",
     job_id: str = "",
     bpm: int = None,
     **kwargs
