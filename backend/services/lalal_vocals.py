@@ -2,6 +2,10 @@
 🎵 ClipVox - LALAL.AI Vocal Extraction Service
 Extrai apenas a voz da música, removendo instrumentos.
 Isso melhora drasticamente a qualidade do lip sync.
+
+CORREÇÃO: LALAL.AI exige upload raw binary com Content-Disposition como
+header HTTP — NÃO multipart/form-data. Erro anterior:
+"Required argument content-disposition not found"
 """
 
 import os
@@ -46,16 +50,39 @@ def extract_vocals(audio_path: str, job_id: str = "") -> Optional[str]:
 
 
 def _upload_file(audio_path: str) -> Optional[str]:
-    """Faz upload do áudio para o LALAL.AI. Retorna o file_id."""
+    """
+    Faz upload do áudio para o LALAL.AI. Retorna o file_id.
+
+    ✅ CORREÇÃO: LALAL.AI usa upload raw binary (não multipart/form-data).
+    O Content-Disposition deve ser um header HTTP normal, não um header
+    de parte multipart. O código anterior usava requests.files={} o que
+    gerava multipart — a API rejeitava com "content-disposition not found".
+    """
     try:
-        print(f"   📤 Enviando para LALAL.AI...")
+        print(f"   📤 Enviando para LALAL.AI (raw binary)...")
+        filename = os.path.basename(audio_path)
+        ext      = filename.rsplit(".", 1)[-1].lower()
+        ct_map   = {
+            "mp3": "audio/mpeg", "wav": "audio/wav",
+            "ogg": "audio/ogg",  "m4a": "audio/mp4",
+            "aac": "audio/aac",  "flac": "audio/flac",
+        }
+        content_type = ct_map.get(ext, "audio/mpeg")
+
         with open(audio_path, "rb") as f:
-            resp = requests.post(
-                f"{LALAL_API_BASE}/upload/",
-                headers={"Authorization": f"license {LALAL_API_KEY}"},
-                files={"file": (os.path.basename(audio_path), f, "audio/wav")},
-                timeout=120
-            )
+            file_bytes = f.read()
+
+        resp = requests.post(
+            f"{LALAL_API_BASE}/upload/",
+            headers={
+                "Authorization":     f"license {LALAL_API_KEY}",
+                # ✅ Content-Disposition como header HTTP (não multipart)
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Type":      content_type,
+            },
+            data=file_bytes,   # raw binary — NÃO files={}
+            timeout=120,
+        )
         print(f"   📥 Upload HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
         if resp.status_code != 200 or data.get("status") == "error":
@@ -77,21 +104,21 @@ def _start_split(file_id: str) -> Optional[str]:
             f"{LALAL_API_BASE}/split/",
             headers={
                 "Authorization": f"license {LALAL_API_KEY}",
-                "Content-Type": "application/json",
+                "Content-Type":  "application/json",
             },
             json={
-                "id": file_id,
-                "stem": "vocals",          # extrai só vocals
-                "splitter": "phoenix",     # modelo de qualidade
+                "id":       file_id,
+                "stem":     "vocals",    # extrai só vocals
+                "splitter": "phoenix",   # modelo de qualidade
             },
-            timeout=30
+            timeout=30,
         )
         print(f"   📥 Split HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
         if resp.status_code != 200 or data.get("status") == "error":
             print(f"   ❌ Split falhou: {data.get('error', 'erro desconhecido')}")
             return None
-        task_id = data.get("task_id") or file_id  # alguns endpoints retornam o mesmo id
+        task_id = data.get("task_id") or file_id
         print(f"   ✅ Separação iniciada — task_id: {task_id}")
         return task_id
     except Exception as e:
@@ -109,25 +136,24 @@ def _poll_result(task_id: str, timeout: int = 300) -> Optional[str]:
                 f"{LALAL_API_BASE}/check/",
                 headers={"Authorization": f"license {LALAL_API_KEY}"},
                 params={"id": task_id},
-                timeout=15
+                timeout=15,
             )
-            data = resp.json()
+            data   = resp.json()
             status = data.get("status", "")
             print(f"   ⏳ Status: {status} ({elapsed}s)")
 
             if status == "success":
-                # A URL do vocal fica em split_results.vocals ou vocal_stem_url
-                split = data.get("split_results", {})
+                split     = data.get("split_results", {})
                 vocal_url = (
                     split.get("vocals_url") or
-                    split.get("stem_url") or
-                    data.get("vocal_url") or
+                    split.get("stem_url")   or
+                    data.get("vocal_url")   or
                     data.get("vocals_url")
                 )
                 if vocal_url:
                     print(f"   ✅ Vocals prontos: {vocal_url[:80]}")
                     return vocal_url
-                print(f"   ❌ URL de vocals não encontrada na resposta: {data}")
+                print(f"   ❌ URL de vocals não encontrada: {data}")
                 return None
 
             elif status == "error":
