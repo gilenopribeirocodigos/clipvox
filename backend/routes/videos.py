@@ -82,7 +82,6 @@ async def generate_video(
         "videos_status":  "pending",
         "merge_status":   None,
         "merge_url":      None,
-        # ── Lip Sync ──────────────────────────────────────────
         "lipsync_status": None,
         "lipsync_url":    None,
     }
@@ -128,7 +127,6 @@ async def get_job_status(job_id: str):
         "videos_status":    job.get("videos_status"),
         "merge_status":     job.get("merge_status"),
         "merge_url":        job.get("merge_url"),
-        # ── Lip Sync ──────────────────────────────────────────
         "lipsync_status":   job.get("lipsync_status"),
         "lipsync_url":      job.get("lipsync_url"),
         "config": {
@@ -202,16 +200,6 @@ async def merge_final_video(job_id: str, background_tasks: BackgroundTasks):
 
 # ═══════════════════════════════════════════════════════════════
 # POST /lipsync/{job_id}
-# ───────────────────────────────────────────────────────────────
-# Gera vídeo com sincronização labial: o personagem move os
-# lábios sincronizado com o áudio da música do job.
-#
-# Parâmetros (form-data) — pelo menos um dos três é obrigatório:
-#   face_image : upload de imagem/vídeo do personagem
-#   face_url   : URL pública alternativa
-#   (sem nenhum) → usa o primeiro video_clip gerado no job
-#
-# model : modelo Kling (padrão: kling)
 # ═══════════════════════════════════════════════════════════════
 @router.post("/lipsync/{job_id}")
 async def generate_lipsync_video(
@@ -219,19 +207,17 @@ async def generate_lipsync_video(
     background_tasks: BackgroundTasks,
     face_image:       Optional[UploadFile] = File(None),
     face_url:         str                  = Form(""),
-    model:            str                  = Form("kling"),   # ✅ CORRIGIDO: era "kling-v1-6"
+    model:            str                  = Form("kling"),
 ):
     if job_id not in jobs_db:
         raise HTTPException(404, "Job not found")
 
     job = jobs_db[job_id]
 
-    # ── Validar áudio disponível ──────────────────────────────────────────────
     audio_path = job.get("audio_path")
     if not audio_path or not os.path.exists(audio_path):
         raise HTTPException(400, "Áudio do job não encontrado")
 
-    # ── Resolver fonte do rosto (prioridade: upload > url > ref_image) ────────
     face_source = None
 
     if face_image:
@@ -258,7 +244,6 @@ async def generate_lipsync_video(
             "ou inclua uma ref_image ao criar o job com /generate."
         )
 
-    # ── Evitar processamento duplicado ────────────────────────────────────────
     if job.get("lipsync_status") == "processing":
         return {"message": "Lip sync já em andamento", "job_id": job_id}
 
@@ -276,7 +261,7 @@ async def generate_lipsync_video(
     return {
         "job_id":  job_id,
         "status":  "processing",
-        "message": "Lip sync iniciado — o personagem será sincronizado com o áudio da música",
+        "message": "Lip sync iniciado",
         "face":    face_url if face_url else os.path.basename(face_source),
         "audio":   os.path.basename(audio_path),
         "model":   model,
@@ -284,7 +269,7 @@ async def generate_lipsync_video(
 
 
 # ═══════════════════════════════════════════════════════════════
-# GET /download/{job_id}  ← FALLBACK quando R2 não está disponível
+# GET /download/{job_id}
 # ═══════════════════════════════════════════════════════════════
 @router.get("/download/{job_id}")
 async def download_merged_video(job_id: str):
@@ -384,7 +369,7 @@ def process_video_clips(job_id: str, mode: str = "std"):
             bpm=bpm,
             aspect_ratio=aspect_ratio,
             mode=mode,
-            job_id=job_id,   # ✅ CORRIGIDO: job_id estava faltando → causava "jobs//clip_001.mp4"
+            job_id=job_id,
         )
         success_count = sum(1 for r in video_results if r.get("success", False))
         print(f"✅ Clipes gerados: {success_count}/{len(valid_scenes)}")
@@ -441,18 +426,21 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
     print(f"\n🎤 Iniciando lip sync — job {job_id} | model: {model}")
     job = jobs_db.get(job_id, {})
 
-    # Kling lip sync exige VÍDEO MP4, não imagem JPG.
-    video_clips = job.get("video_clips") or []
+    video_clips      = job.get("video_clips") or []
     successful_clips = [c for c in video_clips if c.get("success") and c.get("video_url")]
 
-    if successful_clips:
-        face_video_url = successful_clips[0]["video_url"]
-        print(f"   🎬 Usando video_clip como base: {face_video_url[:80]}")
-    else:
+    if not successful_clips:
         jobs_db[job_id]["lipsync_status"] = "failed"
         jobs_db[job_id]["lipsync_error"]  = "Nenhum video_clip disponível. Gere os clipes primeiro."
         print(f"❌ Lip sync falhou: sem video_clips disponíveis")
         return
+
+    clip = successful_clips[0]
+
+    # ✅ Usa kling_url (CDN original Kling) — o servidor Kling não acessa R2 privado.
+    # Fallback para video_url caso kling_url não esteja salva.
+    face_video_url = clip.get("kling_url") or clip.get("video_url")
+    print(f"   🎬 Vídeo para lip sync: {face_video_url[:80]}")
 
     result = generate_lipsync(
         face_source=face_video_url,
