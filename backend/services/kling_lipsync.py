@@ -104,7 +104,7 @@ def _upload_audio_to_r2(audio_path: str, job_id: str = "") -> Optional[str]:
 # PIAPI LIP SYNC — criar task
 # ═══════════════════════════════════════════════════════════════
 def create_lipsync_task(video_url: str, audio_url: str,
-                        model: str = "kling-v1-6") -> Optional[str]:
+                        model: str = "kling") -> Optional[str]:
     print(f"🎤 Criando task de Lip Sync via PiAPI...")
     print(f"   Vídeo      : {video_url[:80]}")
     print(f"   Áudio      : {audio_url[:80]}")
@@ -222,7 +222,7 @@ def generate_lipsync(
     face_source:  str,
     audio_source: str,
     job_id:       str  = "",
-    model:        str  = "kling-v1-6",
+    model:        str  = "kling",
     max_retries:  int  = 2,
     extract_vocals_first: bool = True,
 ) -> dict:
