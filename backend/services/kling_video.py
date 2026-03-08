@@ -69,7 +69,6 @@ def create_kling_video_task(
         print("   PIAPI_API_KEY nao configurada")
         return None
 
-    # PiAPI: endpoint único /api/v1/task com task_type "video_generation"
     payload = {
         "model":     model,
         "task_type": "video_generation",
@@ -92,7 +91,6 @@ def create_kling_video_task(
         print(f"   HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
 
-        # PiAPI retorna code 200 em sucesso
         if data.get("code") != 200:
             print(f"   Erro PiAPI: {data.get('message')}")
             return None
@@ -118,12 +116,10 @@ def poll_kling_video(task_id: str, scene_number: int, timeout: int = 600) -> Opt
             )
             data   = resp.json()
             task   = data.get("data", {})
-            # PiAPI usa "status": pending | processing | completed | failed
             status = task.get("status", "")
             print(f"   Cena {scene_number} - {status} ({elapsed}s)")
 
             if status == "completed":
-                # URL em: data.output.works[0].video.resource
                 works = task.get("output", {}).get("works", [])
                 if works:
                     video_url = works[0].get("video", {}).get("resource")
@@ -230,15 +226,17 @@ def generate_video_clip(
             time.sleep(15 * attempt)
             continue
 
-        video_url = poll_kling_video(task_id, scene_number)
+        kling_url = poll_kling_video(task_id, scene_number)
 
-        if video_url:
-            local_path, r2_url = _download_video(video_url, scene_number, job_id)
-            final_url = r2_url or video_url
+        if kling_url:
+            local_path, r2_url = _download_video(kling_url, scene_number, job_id)
+            final_url = r2_url or kling_url
+            print(f"   🔗 kling_url salva para lip sync: {kling_url[:80]}")
             return {
                 "success":      True,
                 "scene_number": scene_number,
-                "video_url":    final_url,
+                "video_url":    final_url,  # R2 — para display/download
+                "kling_url":    kling_url,  # ✅ URL original Kling — para lip sync
                 "video_path":   local_path,
                 "task_id":      task_id,
                 "attempt":      attempt,
@@ -250,6 +248,7 @@ def generate_video_clip(
         "success":      False,
         "scene_number": scene_number,
         "video_url":    None,
+        "kling_url":    None,
         "video_path":   None,
         "task_id":      None,
         "error":        f"Falhou apos {max_retries} tentativas",
