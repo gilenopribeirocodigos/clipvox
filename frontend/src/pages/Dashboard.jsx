@@ -428,7 +428,7 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted }) {
   const [status,   setStatus]   = useState(null) // null | 'processing' | 'completed' | 'failed'
   const [lipUrl,   setLipUrl]   = useState(null)
   const [error,    setError]    = useState(null)
-  const [model,    setModel]    = useState('kling-v1-6')
+  const [model,    setModel]    = useState('kling')
   const [skipped,  setSkipped]  = useState(false)
   const pollRef = useRef()
 
@@ -509,8 +509,8 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted }) {
           {/* Seleção de modelo */}
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:16 }}>
             {[
-              { value:'kling-v1-6', label:'Kling v1.6', desc:'Rápido · ~$0.28', quality:'Bom' },
-              { value:'kling-v2',   label:'Kling v2',   desc:'Melhor sync · ~$0.50', quality:'Excelente' }
+              { value:'kling',      label:'Kling Standard', desc:'~$0.10/5s', quality:'Bom' },
+              { value:'kling-v1-5', label:'Kling v1.5',     desc:'~$0.10/5s', quality:'Excelente' }
             ].map(m => (
               <div key={m.value} onClick={() => setModel(m.value)}
                 style={{ padding:'12px 14px', borderRadius:12, cursor:'pointer', background: model===m.value ? 'rgba(139,92,246,.1)' : 'rgba(255,255,255,.03)', border: model===m.value ? '1px solid rgba(139,92,246,.4)' : '1px solid rgba(255,255,255,.07)', transition:'all .25s' }}>
