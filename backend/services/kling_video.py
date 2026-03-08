@@ -1,38 +1,26 @@
 """
-🎬 ClipVox - Kling Video Service (API Oficial)
-Gera clipes de vídeo usando a API oficial do Kling AI.
-Auth: JWT com Access Key + Secret Key
+🎬 ClipVox - Kling Video Service (via PiAPI)
+Gera clipes de vídeo usando PiAPI como intermediário do Kling AI.
+Auth: x-api-key (PIAPI_API_KEY)
 """
 
 import os
 import time
 import base64
 import requests
-import jwt
 from typing import Optional
 
-KLING_ACCESS_KEY = os.getenv("KLING_ACCESS_KEY", "")
-KLING_SECRET_KEY = os.getenv("KLING_SECRET_KEY", "")
-KLING_API_BASE   = "https://api.klingai.com"
-IMGBB_KEY        = os.getenv("IMGBB_API_KEY", "")
-
-
-def _get_jwt_token() -> str:
-    if not KLING_ACCESS_KEY or not KLING_SECRET_KEY:
-        raise ValueError("KLING_ACCESS_KEY e KLING_SECRET_KEY sao obrigatorios")
-    headers = {"alg": "HS256", "typ": "JWT"}
-    payload = {
-        "iss": KLING_ACCESS_KEY,
-        "exp": int(time.time()) + 1800,
-        "nbf": int(time.time()) - 5
-    }
-    return jwt.encode(payload, KLING_SECRET_KEY, algorithm="HS256", headers=headers)
+PIAPI_API_KEY = os.getenv("PIAPI_API_KEY", "")
+PIAPI_BASE    = "https://api.piapi.ai"
+IMGBB_KEY     = os.getenv("IMGBB_API_KEY", "")
 
 
 def _auth_headers() -> dict:
+    if not PIAPI_API_KEY:
+        raise ValueError("PIAPI_API_KEY não configurada")
     return {
-        "Content-Type":  "application/json",
-        "Authorization": f"Bearer {_get_jwt_token()}"
+        "Content-Type": "application/json",
+        "x-api-key":    PIAPI_API_KEY,
     }
 
 
@@ -77,31 +65,38 @@ def create_kling_video_task(
 ) -> Optional[str]:
     print(f"\nCreating video task Scene {scene_number} | {model} | {mode} | {duration}s")
 
-    if not KLING_ACCESS_KEY:
-        print("   KLING_ACCESS_KEY nao configurada")
+    if not PIAPI_API_KEY:
+        print("   PIAPI_API_KEY nao configurada")
         return None
 
+    # PiAPI: endpoint único /api/v1/task com task_type "video_generation"
     payload = {
-        "model_name":   model,
-        "prompt":       prompt[:2500],
-        "image":        image_url,
-        "duration":     str(duration),
-        "mode":         mode,
-        "aspect_ratio": aspect_ratio,
+        "model":     model,
+        "task_type": "video_generation",
+        "input": {
+            "prompt":       prompt[:2500],
+            "image_url":    image_url,
+            "duration":     duration,
+            "mode":         mode,
+            "aspect_ratio": aspect_ratio,
+        }
     }
 
     try:
         resp = requests.post(
-            f"{KLING_API_BASE}/v1/videos/image2video",
+            f"{PIAPI_BASE}/api/v1/task",
             headers=_auth_headers(),
             json=payload,
             timeout=30
         )
         print(f"   HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
-        if data.get("code") != 0:
-            print(f"   Erro: {data.get('message')}")
+
+        # PiAPI retorna code 200 em sucesso
+        if data.get("code") != 200:
+            print(f"   Erro PiAPI: {data.get('message')}")
             return None
+
         task_id = data.get("data", {}).get("task_id")
         print(f"   Task criada: {task_id}")
         return task_id
@@ -117,28 +112,32 @@ def poll_kling_video(task_id: str, scene_number: int, timeout: int = 600) -> Opt
         time.sleep(10)
         try:
             resp = requests.get(
-                f"{KLING_API_BASE}/v1/videos/image2video/{task_id}",
+                f"{PIAPI_BASE}/api/v1/task/{task_id}",
                 headers=_auth_headers(),
                 timeout=15
             )
-            data      = resp.json()
-            if data.get("code") != 0:
-                print(f"   Polling erro: {data.get('message')}")
-                return None
-            task_info = data.get("data", {})
-            status    = task_info.get("task_status", "")
+            data   = resp.json()
+            task   = data.get("data", {})
+            # PiAPI usa "status": pending | processing | completed | failed
+            status = task.get("status", "")
             print(f"   Cena {scene_number} - {status} ({elapsed}s)")
-            if status == "succeed":
-                videos = task_info.get("task_result", {}).get("videos", [])
-                if videos:
-                    video_url = videos[0].get("url")
-                    print(f"   Video pronto: {video_url[:80]}")
-                    return video_url
+
+            if status == "completed":
+                # URL em: data.output.works[0].video.resource
+                works = task.get("output", {}).get("works", [])
+                if works:
+                    video_url = works[0].get("video", {}).get("resource")
+                    if video_url:
+                        print(f"   Video pronto: {video_url[:80]}")
+                        return video_url
                 print(f"   Nenhum video no resultado")
                 return None
+
             elif status == "failed":
-                print(f"   Task falhou: {task_info.get('task_status_msg')}")
+                error = task.get("error", {}).get("message", "desconhecido")
+                print(f"   Task falhou: {error}")
                 return None
+
         except Exception as e:
             print(f"   Polling erro: {e}")
 
@@ -192,7 +191,6 @@ def _download_video(video_url: str, scene_number: int, job_id: str) -> tuple:
                 f.write(chunk)
         print(f"   Video salvo: {local_path}")
 
-        # Upload para R2 para persistência
         r2_url = _upload_video_to_r2(local_path, scene_number, job_id)
         return local_path, r2_url
     except Exception as e:
@@ -236,7 +234,6 @@ def generate_video_clip(
 
         if video_url:
             local_path, r2_url = _download_video(video_url, scene_number, job_id)
-            # Usa R2 URL se disponível, senão a URL original do Kling (expira, mas é o que temos)
             final_url = r2_url or video_url
             return {
                 "success":      True,
@@ -271,7 +268,7 @@ def generate_video_clips_batch(
 ) -> list:
     results = []
     successful_count = 0
-    print(f"\nGenerating {len(scenes)} video clips via Kling API Oficial...")
+    print(f"\nGenerating {len(scenes)} video clips via PiAPI (Kling)...")
     print(f"   Model: {model} | Mode: {mode} | {duration}s | {aspect_ratio}")
 
     for scene in scenes:
