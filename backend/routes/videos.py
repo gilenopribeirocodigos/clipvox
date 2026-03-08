@@ -219,7 +219,7 @@ async def generate_lipsync_video(
     background_tasks: BackgroundTasks,
     face_image:       Optional[UploadFile] = File(None),
     face_url:         str                  = Form(""),
-    model:            str                  = Form("kling-v1-6"),
+    model:            str                  = Form("kling"),
 ):
     if job_id not in jobs_db:
         raise HTTPException(404, "Job not found")
