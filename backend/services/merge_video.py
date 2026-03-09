@@ -1,7 +1,14 @@
 """
 🎬 ClipVox - Merge Service
 Concatena clipes de vídeo e adiciona o áudio original.
-Faz upload para R2 — inicializa o client diretamente das env vars.
+Faz upload para R2 — usa as mesmas env vars do restante do projeto.
+
+✅ CORREÇÃO: env vars alinhadas com o Render:
+   R2_ACCESS_KEY_ID       (era CLOUDFLARE_R2_ACCESS_KEY)
+   R2_SECRET_ACCESS_KEY   (era CLOUDFLARE_R2_SECRET_KEY)
+   R2_ENDPOINT_URL        (era construído de CLOUDFLARE_ACCOUNT_ID)
+   R2_BUCKET_NAME         (era CLOUDFLARE_R2_BUCKET)
+   R2_PUBLIC_URL          (já estava correto)
 """
 
 import os
@@ -10,31 +17,32 @@ import tempfile
 import requests
 from typing import List, Optional
 
-# ── Constantes de env vars (mesmas usadas pelo serviço de imagens) ──────────
-R2_ACCOUNT_ID  = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
-R2_ACCESS_KEY  = os.getenv("CLOUDFLARE_R2_ACCESS_KEY", "")
-R2_SECRET_KEY  = os.getenv("CLOUDFLARE_R2_SECRET_KEY", "")
-R2_BUCKET      = os.getenv("CLOUDFLARE_R2_BUCKET", "clipvox-scenes")
-R2_PUBLIC_URL  = os.getenv("R2_PUBLIC_URL", "https://pub-d360cea000634ea6a69c5cb5cae8465a.r2.dev")
+# ── Env vars — mesmas usadas em kling_video.py e kling_lipsync.py ───────────
+R2_ACCESS_KEY  = os.getenv("R2_ACCESS_KEY_ID", "")
+R2_SECRET_KEY  = os.getenv("R2_SECRET_ACCESS_KEY", "")
+R2_ENDPOINT    = os.getenv("R2_ENDPOINT_URL", "")
+R2_BUCKET      = os.getenv("R2_BUCKET_NAME", "clipvox-images")
+R2_PUBLIC_URL  = os.getenv("R2_PUBLIC_URL", "").rstrip("/")
 
-# Diretório para manter o arquivo final acessível via download endpoint
 MERGE_OUTPUT_DIR = os.getenv("MERGE_OUTPUT_DIR", "/tmp/clipvox_merges")
 os.makedirs(MERGE_OUTPUT_DIR, exist_ok=True)
 
 
 def _get_r2_client():
     """Inicializa e retorna o cliente boto3 para Cloudflare R2."""
-    if not R2_ACCESS_KEY or not R2_SECRET_KEY or not R2_ACCOUNT_ID:
+    if not all([R2_ACCESS_KEY, R2_SECRET_KEY, R2_ENDPOINT]):
+        print("   ⚠️ R2 não configurado (R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_ENDPOINT_URL)")
         return None
     try:
         import boto3
         client = boto3.client(
             "s3",
-            endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
+            endpoint_url=R2_ENDPOINT,
             aws_access_key_id=R2_ACCESS_KEY,
             aws_secret_access_key=R2_SECRET_KEY,
-            region_name="auto"
+            region_name="auto",
         )
+        print("   ✅ R2 client OK")
         return client
     except Exception as e:
         print(f"   ⚠️ Erro ao criar R2 client: {e}")
@@ -45,10 +53,9 @@ def merge_clips_with_audio(
     video_urls: List[str],
     audio_path: str,
     job_id: str,
-    # Parâmetros opcionais mantidos por compatibilidade (ignorados — usa env vars)
     r2_client=None,
     r2_bucket_name: str = None,
-    r2_public_url: str = None
+    r2_public_url: str = None,
 ) -> dict:
     """
     Baixa os clipes, concatena e adiciona o áudio original.
@@ -92,7 +99,7 @@ def merge_clips_with_audio(
             "-f", "concat", "-safe", "0",
             "-i", concat_file,
             "-c", "copy",
-            merged_video
+            merged_video,
         ], capture_output=True, text=True, timeout=180)
 
         if result.returncode != 0:
@@ -115,7 +122,7 @@ def merge_clips_with_audio(
                 "-c:v", "copy",
                 "-c:a", "aac", "-b:a", "192k",
                 "-shortest",
-                output_path
+                output_path,
             ], capture_output=True, text=True, timeout=300)
 
             if result.returncode != 0:
@@ -130,40 +137,39 @@ def merge_clips_with_audio(
         file_size = os.path.getsize(output_path)
         print(f"   ✅ Merge finalizado: {file_size//1024}KB")
 
-        # ── 5. Tentar upload para R2 ──────────────────────────────────────────
+        # ── 5. Upload para R2 ─────────────────────────────────────────────────
         client = _get_r2_client()
         if client:
-            r2_key = f"jobs/{job_id}/final_video.mp4"
+            r2_key    = f"jobs/{job_id}/final_video.mp4"
+            bucket    = r2_bucket_name or R2_BUCKET
+            pub_url   = (r2_public_url or R2_PUBLIC_URL).rstrip("/")
             print(f"   📤 Enviando para R2: {r2_key}")
             try:
                 with open(output_path, "rb") as f:
                     client.put_object(
-                        Bucket=R2_BUCKET,
+                        Bucket=bucket,
                         Key=r2_key,
                         Body=f.read(),
-                        ContentType="video/mp4"
+                        ContentType="video/mp4",
                     )
-                public_url = f"{R2_PUBLIC_URL}/{r2_key}"
+                public_url = f"{pub_url}/{r2_key}"
                 print(f"   ✅ Upload R2 concluído: {public_url}")
                 return {"success": True, "output_url": public_url, "r2_key": r2_key}
             except Exception as e:
                 print(f"   ⚠️ Upload R2 falhou: {e} — usando fallback local")
-        else:
-            print(f"   ⚠️ R2 não configurado — usando fallback local")
 
-        # ── 6. Fallback: salvar em diretório permanente para download ─────────
+        # ── 6. Fallback local ─────────────────────────────────────────────────
         local_filename = f"final_{job_id}.mp4"
         local_path     = os.path.join(MERGE_OUTPUT_DIR, local_filename)
         import shutil
         shutil.copy2(output_path, local_path)
         print(f"   💾 Arquivo salvo localmente: {local_path}")
 
-        # Retorna um path relativo que o endpoint /download/{job_id} usará
         return {
             "success":    True,
             "output_url": None,
             "local_path": local_path,
-            "filename":   local_filename
+            "filename":   local_filename,
         }
 
     except subprocess.TimeoutExpired:
@@ -173,7 +179,6 @@ def merge_clips_with_audio(
         traceback.print_exc()
         return {"success": False, "error": str(e)}
     finally:
-        # Limpar arquivos temporários do tmpdir
         import shutil
         try:
             shutil.rmtree(tmpdir, ignore_errors=True)
