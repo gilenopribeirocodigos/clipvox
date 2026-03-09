@@ -2,12 +2,13 @@
 🎤 ClipVox - Kling AI Lip Sync Service (via PiAPI)
 Fluxo:
   1. Converte áudio para MP3 (compatível + leve) via ffmpeg
-  2. Extrai vocals da música com LALAL.AI (remove instrumentos)
-  3. Faz upload dos vocals/áudio para Cloudflare R2
-  4. Verifica acessibilidade pública das URLs antes de enviar ao Kling
-  5. Envia para PiAPI (Kling lip sync)
-  6. Faz polling até concluir
-  7. Salva resultado no R2 e retorna a URL
+  2. ✅ NOVO: Trime o áudio para a duração exata do vídeo (ffprobe + ffmpeg)
+  3. Extrai vocals da música com LALAL.AI (remove instrumentos)
+  4. Faz upload dos vocals/áudio para Cloudflare R2
+  5. Verifica acessibilidade pública das URLs antes de enviar ao Kling
+  6. Envia para PiAPI (Kling lip sync)
+  7. Faz polling até concluir
+  8. Salva resultado no R2 e retorna a URL
 Auth: x-api-key (PIAPI_API_KEY)
 """
 
@@ -41,17 +42,45 @@ def _auth_headers() -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════
+# DETECTAR DURAÇÃO DO VÍDEO VIA FFPROBE
+# ═══════════════════════════════════════════════════════════════
+def _get_video_duration(video_url: str) -> Optional[float]:
+    """
+    Usa ffprobe para detectar a duração do vídeo (em segundos).
+    Funciona com URLs remotas (Kling CDN) ou caminhos locais.
+    """
+    try:
+        result = subprocess.run([
+            "ffprobe", "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            video_url
+        ], capture_output=True, text=True, timeout=30)
+
+        if result.returncode == 0:
+            import json
+            info     = json.loads(result.stdout)
+            duration = float(info.get("format", {}).get("duration", 0))
+            if duration > 0:
+                print(f"   ⏱️ Duração do vídeo detectada: {duration:.2f}s")
+                return duration
+        print(f"   ⚠️ ffprobe não retornou duração válida")
+        return None
+    except Exception as e:
+        print(f"   ⚠️ ffprobe erro: {e}")
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════
 # CONVERTER ÁUDIO PARA MP3
 # ═══════════════════════════════════════════════════════════════
 def _convert_to_mp3(audio_path: str, job_id: str = "") -> str:
     """
     Converte qualquer áudio para MP3 128kbps via ffmpeg.
-    MP3 é mais compatível e muito menor que WAV.
     Retorna o path do MP3 (ou o original se ffmpeg falhar).
     """
     ext = audio_path.rsplit(".", 1)[-1].lower()
     if ext == "mp3":
-        print(f"   ✅ Áudio já é MP3, sem conversão necessária")
         return audio_path
 
     from config import UPLOAD_DIR
@@ -61,12 +90,8 @@ def _convert_to_mp3(audio_path: str, job_id: str = "") -> str:
     print(f"   🔄 Convertendo {ext.upper()} → MP3 para compatibilidade com Kling...")
     try:
         result = subprocess.run([
-            "ffmpeg", "-y",
-            "-i",     audio_path,
-            "-vn",
-            "-ar",    "44100",   # sample rate padrão
-            "-ac",    "2",       # stereo
-            "-b:a",   "128k",    # 128kbps — bom equilíbrio qualidade/tamanho
+            "ffmpeg", "-y", "-i", audio_path,
+            "-vn", "-ar", "44100", "-ac", "2", "-b:a", "128k",
             mp3_path
         ], capture_output=True, text=True, timeout=120)
 
@@ -81,6 +106,64 @@ def _convert_to_mp3(audio_path: str, job_id: str = "") -> str:
     except Exception as e:
         print(f"   ⚠️ Erro conversão MP3: {e}, usando original")
         return audio_path
+
+
+# ═══════════════════════════════════════════════════════════════
+# ✅ NOVO: TRIMAR ÁUDIO PARA DURAÇÃO DO CLIPE
+# ═══════════════════════════════════════════════════════════════
+def _trim_audio(audio_path: str, duration: float, job_id: str = "") -> str:
+    """
+    Trime o áudio para a duração exata do vídeo (em segundos).
+    Kling rejeita quando o áudio é muito mais longo que o vídeo.
+    Retorna o path do áudio trimado (ou original se falhar).
+    """
+    try:
+        audio_duration = _get_audio_duration(audio_path)
+        if audio_duration and audio_duration <= duration + 0.5:
+            print(f"   ✅ Áudio ({audio_duration:.1f}s) ≤ vídeo ({duration:.1f}s) — sem trim necessário")
+            return audio_path
+
+        from config import UPLOAD_DIR
+        ext          = audio_path.rsplit(".", 1)[-1].lower()
+        trimmed_path = os.path.join(UPLOAD_DIR, f"{job_id}_trimmed.{ext}")
+
+        print(f"   ✂️ Trimando áudio: {audio_duration:.1f}s → {duration:.1f}s (duração do clipe)")
+        result = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", audio_path,
+            "-t", str(duration),
+            "-c", "copy",
+            trimmed_path
+        ], capture_output=True, text=True, timeout=60)
+
+        if result.returncode == 0 and os.path.exists(trimmed_path):
+            trimmed_size = os.path.getsize(trimmed_path) // 1024
+            print(f"   ✅ Áudio trimado: {trimmed_size}KB ({duration:.1f}s)")
+            return trimmed_path
+        else:
+            print(f"   ⚠️ Trim falhou: {result.stderr[-200:]}")
+            return audio_path
+    except Exception as e:
+        print(f"   ⚠️ Erro ao trimar áudio: {e}")
+        return audio_path
+
+
+def _get_audio_duration(audio_path: str) -> Optional[float]:
+    """Detecta duração do áudio local via ffprobe."""
+    try:
+        result = subprocess.run([
+            "ffprobe", "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            audio_path
+        ], capture_output=True, text=True, timeout=15)
+        if result.returncode == 0:
+            import json
+            info = json.loads(result.stdout)
+            return float(info.get("format", {}).get("duration", 0))
+        return None
+    except Exception:
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -152,14 +235,8 @@ def _upload_audio_to_r2(audio_path: str, job_id: str = "") -> Optional[str]:
 # VERIFICAR ACESSIBILIDADE DAS URLS
 # ═══════════════════════════════════════════════════════════════
 def _check_url_accessible(url: str, label: str) -> bool:
-    """
-    Verifica se uma URL é acessível publicamente.
-    Kling faz preprocess baixando vídeo + áudio — se alguma URL retornar
-    403/404, o preprocess falha imediatamente com 'failed to do kling
-    preprocess request'.
-    """
     try:
-        resp = requests.head(url, timeout=15, allow_redirects=True)
+        resp   = requests.head(url, timeout=15, allow_redirects=True)
         status = resp.status_code
         if status == 200:
             print(f"   ✅ {label} acessível (HTTP {status})")
@@ -170,7 +247,7 @@ def _check_url_accessible(url: str, label: str) -> bool:
             return False
     except Exception as e:
         print(f"   ⚠️ {label} — erro ao verificar: {e}")
-        return False  # assume inacessível
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -205,17 +282,13 @@ def create_lipsync_task(video_url: str, audio_url: str,
         data = resp.json()
 
         if data.get("code") != 200:
-            # ✅ Extrai e imprime raw_message em linha separada (evita truncamento do Render)
             raw_msg = (
-                data.get("data", {})
-                    .get("error", {})
-                    .get("raw_message", "")
+                data.get("data", {}).get("error", {}).get("raw_message", "")
                 or data.get("message", "sem mensagem")
             )
             print(f"   ❌ Erro PiAPI code: {data.get('code')}")
             print(f"   ❌ message : {data.get('message')}")
             print(f"   ❌ raw_message COMPLETO:")
-            # Divide em chunks de 200 chars para garantir que o Render não trunca
             for i in range(0, len(raw_msg), 200):
                 print(f"      {raw_msg[i:i+200]}")
             return None
@@ -237,7 +310,7 @@ def poll_lipsync_task(task_id: str, timeout: int = 600) -> Optional[str]:
     for elapsed in range(15, timeout + 1, 15):
         time.sleep(15)
         try:
-            resp = requests.get(
+            resp   = requests.get(
                 f"{PIAPI_BASE}/api/v1/task/{task_id}",
                 headers=_auth_headers(),
                 timeout=15,
@@ -254,12 +327,15 @@ def poll_lipsync_task(task_id: str, timeout: int = 600) -> Optional[str]:
                     if url:
                         print(f"   ✅ Lip sync pronto: {url[:80]}")
                         return url
-                print(f"   ❌ Nenhum vídeo no resultado")
+                print(f"   ❌ Nenhum vídeo no resultado: {task.get('output')}")
                 return None
 
             elif status == "failed":
-                error = task.get("error", {}).get("message", "desconhecido")
-                print(f"   ❌ Lip sync falhou: {error}")
+                error     = task.get("error", {})
+                raw_msg   = error.get("raw_message", "") or error.get("message", "desconhecido")
+                print(f"   ❌ Lip sync falhou — raw_message COMPLETO:")
+                for i in range(0, max(len(raw_msg), 1), 200):
+                    print(f"      {raw_msg[i:i+200]}")
                 return None
 
         except Exception as e:
@@ -303,18 +379,20 @@ def _upload_lipsync_to_r2(video_url: str, job_id: str) -> Optional[str]:
 def generate_lipsync(
     face_source:          str,
     audio_source:         str,
-    job_id:               str  = "",
-    model:                str  = "kling",
-    max_retries:          int  = 2,
-    extract_vocals_first: bool = True,
+    job_id:               str            = "",
+    model:                str            = "kling",
+    max_retries:          int            = 2,
+    extract_vocals_first: bool           = True,
+    clip_duration:        Optional[float] = None,
 ) -> dict:
     """
-    face_source  : URL de um vídeo MP4 do Kling CDN (kling_url) ou path local
-    audio_source : caminho local do áudio da música
-    extract_vocals_first: se True, extrai só a voz com LALAL.AI antes do lip sync
+    face_source    : URL de vídeo do Kling CDN (kling_url) ou path local de imagem
+    audio_source   : caminho local do áudio da música
+    clip_duration  : duração do clipe em segundos (para trim do áudio)
+                     Se None, detecta automaticamente via ffprobe na URL do vídeo
     """
 
-    # ── 1. Converter áudio para MP3 (compatibilidade + tamanho) ──────────────
+    # ── 1. Converter áudio para MP3 ───────────────────────────────────────────
     audio_path = _convert_to_mp3(audio_source, job_id)
 
     # ── 2. Extrair vocals com LALAL.AI ────────────────────────────────────────
@@ -323,13 +401,24 @@ def generate_lipsync(
         print(f"🎵 Extraindo vocals com LALAL.AI para melhorar lip sync...")
         vocals_path = extract_vocals(audio_path, job_id)
         if vocals_path:
-            # Vocals também precisam ser MP3
             audio_path = _convert_to_mp3(vocals_path, f"{job_id}_vocals")
             print(f"   ✅ Usando vocals isolados: {os.path.basename(audio_path)}")
         else:
             print(f"   ⚠️ LALAL.AI falhou — usando áudio original convertido")
 
-    # ── 3. Resolver URL do rosto ──────────────────────────────────────────────
+    # ── 3. ✅ Trimar áudio para duração do clipe ──────────────────────────────
+    # Detecta duração do vídeo automaticamente se não foi passada
+    duration = clip_duration
+    if not duration and not os.path.isfile(face_source):
+        print(f"   🔍 Detectando duração do vídeo via ffprobe...")
+        duration = _get_video_duration(face_source)
+
+    if duration and duration > 0:
+        audio_path = _trim_audio(audio_path, duration, job_id)
+    else:
+        print(f"   ⚠️ Duração do vídeo não detectada — enviando áudio sem trim")
+
+    # ── 4. Resolver URL do rosto ──────────────────────────────────────────────
     face_url = face_source
     if os.path.isfile(face_source):
         print(f"   📤 Hospedando rosto no imgbb...")
@@ -337,31 +426,23 @@ def generate_lipsync(
         if not face_url:
             return {"success": False, "error": "Falha ao hospedar imagem do rosto"}
 
-    # ── 4. Upload do áudio para R2 ────────────────────────────────────────────
+    # ── 5. Upload do áudio para R2 ────────────────────────────────────────────
     print(f"   📤 Hospedando áudio no Cloudflare R2...")
     audio_url = _upload_audio_to_r2(audio_path, job_id)
     if not audio_url:
         return {"success": False, "error": "Falha ao hospedar áudio no R2"}
 
-    # ── 5. Verificar acessibilidade das URLs antes de enviar ao Kling ─────────
+    # ── 6. Verificar acessibilidade ───────────────────────────────────────────
     print(f"\n🔍 Verificando acessibilidade das URLs para o Kling...")
     video_ok = _check_url_accessible(face_url,  "Vídeo (kling_url)")
     audio_ok = _check_url_accessible(audio_url, "Áudio (R2)")
 
     if not video_ok:
-        return {
-            "success": False,
-            "error":   f"URL do vídeo não está acessível publicamente: {face_url[:100]}"
-        }
+        return {"success": False, "error": f"URL do vídeo não acessível: {face_url[:100]}"}
     if not audio_ok:
-        return {
-            "success": False,
-            "error":   f"URL do áudio R2 não está acessível publicamente. "
-                       f"Verifique se o bucket/worker permite leitura pública na pasta /audio/. "
-                       f"URL: {audio_url[:100]}"
-        }
+        return {"success": False, "error": f"URL do áudio R2 não acessível: {audio_url[:100]}"}
 
-    # ── 6. Tentativas de lip sync ─────────────────────────────────────────────
+    # ── 7. Tentativas de lip sync ─────────────────────────────────────────────
     for attempt in range(1, max_retries + 1):
         print(f"\n🎤 Lip Sync — Tentativa {attempt}/{max_retries}")
         task_id = create_lipsync_task(face_url, audio_url, model)
