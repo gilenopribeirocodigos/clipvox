@@ -167,6 +167,65 @@ def _get_audio_duration(audio_path: str) -> Optional[float]:
 
 
 # ═══════════════════════════════════════════════════════════════
+# ✅ NOVO: BAIXAR E COMPRIMIR VÍDEO SE > 10MB (limite Kling lip sync)
+# ═══════════════════════════════════════════════════════════════
+def _download_and_compress_video(video_url: str, job_id: str,
+                                 max_mb: int = 9) -> Optional[str]:
+    """
+    Baixa o vídeo da URL e comprime para ficar abaixo de max_mb.
+    Retorna path local do vídeo comprimido, ou None se falhar.
+    O Kling aceita no máximo 10MB — usamos 9MB como margem de segurança.
+    """
+    from config import UPLOAD_DIR
+    try:
+        print(f"   📥 Baixando vídeo para verificar tamanho...")
+        resp = requests.get(video_url, timeout=120, stream=True)
+        if resp.status_code != 200:
+            print(f"   ❌ Download vídeo falhou: HTTP {resp.status_code}")
+            return None
+
+        raw_path = os.path.join(UPLOAD_DIR, f"{job_id}_raw_clip.mp4")
+        with open(raw_path, "wb") as f:
+            for chunk in resp.iter_content(8192):
+                f.write(chunk)
+
+        size_mb = os.path.getsize(raw_path) / (1024 * 1024)
+        print(f"   📦 Tamanho do vídeo: {size_mb:.1f}MB (limite: {max_mb}MB)")
+
+        if size_mb <= max_mb:
+            print(f"   ✅ Vídeo dentro do limite — sem compressão necessária")
+            return raw_path
+
+        # Comprimir para ficar abaixo do limite
+        compressed_path = os.path.join(UPLOAD_DIR, f"{job_id}_compressed_clip.mp4")
+        duration        = _get_video_duration(raw_path) or 5.0
+        target_kbps     = int((max_mb * 8 * 1024) / duration * 0.85)
+        print(f"   🗜️ Comprimindo: {size_mb:.1f}MB → ~{max_mb}MB (bitrate alvo: {target_kbps}kbps)...")
+
+        result = subprocess.run([
+            "ffmpeg", "-y", "-i", raw_path,
+            "-c:v", "libx264",
+            "-b:v", f"{target_kbps}k",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            compressed_path
+        ], capture_output=True, text=True, timeout=120)
+
+        if result.returncode == 0 and os.path.exists(compressed_path):
+            new_mb = os.path.getsize(compressed_path) / (1024 * 1024)
+            print(f"   ✅ Comprimido: {size_mb:.1f}MB → {new_mb:.1f}MB")
+            os.remove(raw_path)
+            return compressed_path
+        else:
+            print(f"   ⚠️ Compressão falhou: {result.stderr[-200:]} — usando original")
+            return raw_path
+
+    except Exception as e:
+        print(f"   ❌ Erro ao baixar/comprimir vídeo: {e}")
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════
 # UPLOAD FACE → imgbb
 # ═══════════════════════════════════════════════════════════════
 def _upload_face_imgbb(face_path: str) -> Optional[str]:
@@ -418,13 +477,26 @@ def generate_lipsync(
     else:
         print(f"   ⚠️ Duração do vídeo não detectada — enviando áudio sem trim")
 
-    # ── 4. Resolver URL do rosto ──────────────────────────────────────────────
+    # ── 4. Resolver URL do rosto + compressão se > 10MB ─────────────────────
     face_url = face_source
     if os.path.isfile(face_source):
+        # Imagem local → sobe no imgbb
         print(f"   📤 Hospedando rosto no imgbb...")
         face_url = _upload_face_imgbb(face_source)
         if not face_url:
             return {"success": False, "error": "Falha ao hospedar imagem do rosto"}
+    else:
+        # URL de vídeo → baixa, comprime se > 9MB, sobe no imgbb
+        print(f"   🔍 Verificando tamanho do vídeo (limite Kling: 10MB)...")
+        local_video = _download_and_compress_video(face_source, job_id, max_mb=9)
+        if local_video:
+            print(f"   📤 Hospedando vídeo no imgbb...")
+            uploaded = _upload_face_imgbb(local_video)
+            face_url = uploaded if uploaded else face_source
+            if not uploaded:
+                print(f"   ⚠️ imgbb falhou — tentando URL original do Kling")
+        else:
+            print(f"   ⚠️ Download/compressão falhou — tentando URL original")
 
     # ── 5. Upload do áudio para R2 ────────────────────────────────────────────
     print(f"   📤 Hospedando áudio no Cloudflare R2...")
