@@ -83,6 +83,7 @@ async def generate_video(
         "lipsync_status":   None,
         "lipsync_url":      None,
         "lipsync_clips":    None,   # ✅ lip sync por clipe
+        "vocals_path":      None,   # ✅ vocals pré-extraídos pelo LALAL
         "merge_status":     None,
         "merge_url":        None,
     }
@@ -338,6 +339,10 @@ def process_video_pipeline(job_id: str):
         job["total_segments"]  = scene_structure["total_segments"]
         update_job(job_id, progress=28)
         update_job(job_id, progress=30, current_step="creative")
+        # ✅ Pré-extrai vocals em paralelo com geração de imagens (evita N chamadas ao LALAL)
+        print(f"🎵 Pré-extraindo vocals com LALAL.AI...")
+        _preextract_vocals(job_id)
+
         print(f"🎨 Gerando conceito criativo com Claude API...")
         creative_concept = generate_creative_concept_with_prompts(
             audio_metadata, scene_structure, job["description"], job["style"]
@@ -448,6 +453,7 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
             audio_source=audio_path,
             job_id=clip_job_id,
             model=model,
+            preextracted_vocals=jobs_db.get(job_id, {}).get("vocals_path"),
         )
 
         if result["success"]:
@@ -534,6 +540,26 @@ def process_merge(job_id: str):
         import traceback; traceback.print_exc()
         jobs_db[job_id]["merge_status"] = "failed"
         jobs_db[job_id]["merge_error"]  = str(e)
+
+
+def _preextract_vocals(job_id: str):
+    """Extrai vocals com LALAL.AI antecipadamente — roda 1x, reutilizado em todos os clipes."""
+    try:
+        job        = jobs_db.get(job_id, {})
+        audio_path = job.get("audio_path")
+        if not audio_path or not os.path.exists(audio_path):
+            return
+        from services.lalal_vocals import extract_vocals
+        from services.kling_lipsync import _convert_to_mp3
+        mp3_path    = _convert_to_mp3(audio_path, job_id)
+        vocals_path = extract_vocals(mp3_path, job_id)
+        if vocals_path:
+            jobs_db[job_id]["vocals_path"] = vocals_path
+            print(f"   ✅ Vocals pré-extraídos: {os.path.basename(vocals_path)}")
+        else:
+            print(f"   ⚠️ LALAL.AI pré-extração falhou — lip sync usará áudio original")
+    except Exception as e:
+        print(f"   ⚠️ Erro na pré-extração de vocals: {e}")
 
 
 def update_job(job_id: str, **kwargs):
