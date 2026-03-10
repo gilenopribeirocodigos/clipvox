@@ -477,26 +477,43 @@ def generate_lipsync(
     else:
         print(f"   ⚠️ Duração do vídeo não detectada — enviando áudio sem trim")
 
-    # ── 4. Resolver URL do rosto + compressão se > 10MB ─────────────────────
+    # ── 4. Resolver URL do rosto ─────────────────────────────────────────────
     face_url = face_source
     if os.path.isfile(face_source):
-        # Imagem local → sobe no imgbb
-        print(f"   📤 Hospedando rosto no imgbb...")
+        # Imagem local → sobe no imgbb (imgbb só aceita imagens, não vídeo)
+        print(f"   📤 Hospedando imagem de rosto no imgbb...")
         face_url = _upload_face_imgbb(face_source)
         if not face_url:
             return {"success": False, "error": "Falha ao hospedar imagem do rosto"}
     else:
-        # URL de vídeo → baixa, comprime se > 9MB, sobe no imgbb
+        # URL de vídeo (Kling CDN) → verifica tamanho
+        # imgbb NÃO aceita vídeo MP4 — usamos a URL do Kling diretamente (já é pública)
+        # Se > 10MB: baixa, comprime e sobe no R2
         print(f"   🔍 Verificando tamanho do vídeo (limite Kling: 10MB)...")
-        local_video = _download_and_compress_video(face_source, job_id, max_mb=9)
-        if local_video:
-            print(f"   📤 Hospedando vídeo no imgbb...")
-            uploaded = _upload_face_imgbb(local_video)
-            face_url = uploaded if uploaded else face_source
-            if not uploaded:
-                print(f"   ⚠️ imgbb falhou — tentando URL original do Kling")
+        size_resp = requests.head(face_source, timeout=10, allow_redirects=True)
+        content_length = int(size_resp.headers.get("Content-Length", 0))
+        size_mb = content_length / (1024 * 1024)
+        print(f"   📦 Tamanho estimado: {size_mb:.1f}MB")
+
+        if size_mb > 9:
+            # Baixa, comprime e sobe no R2 para ter URL pública < 10MB
+            print(f"   🗜️ Vídeo > 9MB — comprimindo e hospedando no R2...")
+            local_video = _download_and_compress_video(face_source, job_id, max_mb=9)
+            if local_video:
+                r2_client = get_r2_client()
+                r2_key    = f"clips/{job_id}/compressed_clip.mp4"
+                with open(local_video, "rb") as f:
+                    r2_client.put_object(
+                        Bucket=R2_BUCKET_NAME, Key=r2_key,
+                        Body=f, ContentType="video/mp4",
+                    )
+                face_url = f"{R2_PUBLIC_URL}/{r2_key}"
+                print(f"   ✅ Vídeo comprimido no R2: {face_url}")
+                os.remove(local_video)
+            else:
+                print(f"   ⚠️ Compressão falhou — tentando URL original")
         else:
-            print(f"   ⚠️ Download/compressão falhou — tentando URL original")
+            print(f"   ✅ Vídeo dentro do limite — usando URL original do Kling")
 
     # ── 5. Upload do áudio para R2 ────────────────────────────────────────────
     print(f"   📤 Hospedando áudio no Cloudflare R2...")
