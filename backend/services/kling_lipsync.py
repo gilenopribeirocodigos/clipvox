@@ -443,6 +443,7 @@ def generate_lipsync(
     max_retries:          int            = 2,
     extract_vocals_first: bool           = True,
     clip_duration:        Optional[float] = None,
+    preextracted_vocals:  Optional[str]  = None,   # ✅ vocals já extraídos antecipadamente
 ) -> dict:
     """
     face_source    : URL de vídeo do Kling CDN (kling_url) ou path local de imagem
@@ -455,7 +456,11 @@ def generate_lipsync(
     audio_path = _convert_to_mp3(audio_source, job_id)
 
     # ── 2. Extrair vocals com LALAL.AI ────────────────────────────────────────
-    if extract_vocals_first and os.path.isfile(audio_path):
+    if preextracted_vocals and os.path.isfile(preextracted_vocals):
+        # ✅ Vocals já extraídos antecipadamente — pula LALAL
+        print(f"   🎵 Usando vocals pré-extraídos: {os.path.basename(preextracted_vocals)}")
+        audio_path = _convert_to_mp3(preextracted_vocals, f"{job_id}_vocals")
+    elif extract_vocals_first and os.path.isfile(audio_path):
         from services.lalal_vocals import extract_vocals
         print(f"🎵 Extraindo vocals com LALAL.AI para melhorar lip sync...")
         vocals_path = extract_vocals(audio_path, job_id)
