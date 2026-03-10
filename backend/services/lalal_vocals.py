@@ -94,19 +94,18 @@ def _start_split(file_id: str) -> Optional[str]:
     ✅ CORREÇÃO: stem/splitter dentro de "params" (não no root do JSON).
     """
     try:
-        print(f"   🔀 Iniciando separação vocal...")
         resp = requests.post(
             f"{LALAL_API_BASE}/split/",
             headers={
                 "Authorization": f"license {LALAL_API_KEY}",
-                "Content-Type":  "application/json",
+                # ✅ form-data com params como JSON array string (formato oficial LALAL)
             },
-            json={
-                "id": file_id,
-                "params": {              # ✅ CORRETO: dentro de "params"
+            data={
+                "params": __import__("json").dumps([{
+                    "id":       file_id,
                     "stem":     "vocals",
                     "splitter": "phoenix",
-                }
+                }])
             },
             timeout=30,
         )
