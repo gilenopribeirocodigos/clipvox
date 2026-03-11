@@ -363,6 +363,20 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
         jobs_db[job_id]["lipsync_error"]  = "Nenhum video_clip disponivel."
         return
 
+    # ✅ FIX: aguarda vocals_path ser definido antes de iniciar o loop
+    # Evita race condition onde Scene 1 começa antes do StemSplit terminar
+    vocals_path = jobs_db.get(job_id, {}).get("vocals_path")
+    if not vocals_path:
+        print("   ⏳ Aguardando StemSplit finalizar extração de vocals...")
+        for _ in range(18):  # até 3 minutos (18 x 10s)
+            time.sleep(10)
+            vocals_path = jobs_db.get(job_id, {}).get("vocals_path")
+            if vocals_path:
+                print(f"   ✅ Vocals prontos: {os.path.basename(vocals_path)}")
+                break
+        else:
+            print("   ⚠️ Timeout aguardando vocals — lip sync usará áudio original")
+
     total         = len(successful_clips)
     lipsync_clips = []
     success_count = 0
@@ -377,7 +391,7 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
             audio_source=audio_path,
             job_id=clip_job_id,
             model=model,
-            preextracted_vocals=jobs_db.get(job_id, {}).get("vocals_path"),
+            preextracted_vocals=vocals_path,  # ✅ mesmo valor para TODOS os clips
         )
 
         if result["success"]:
