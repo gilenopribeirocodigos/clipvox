@@ -377,35 +377,53 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
         else:
             print("   ⚠️ Timeout aguardando vocals — lip sync usará áudio original")
 
-    total         = len(successful_clips)
-    lipsync_clips = []
-    success_count = 0
+    total = len(successful_clips)
 
-    for i, clip in enumerate(successful_clips):
+    # ✅ Prepara argumentos de cada clipe antecipadamente (trim + upload áudio)
+    # para evitar overhead repetido dentro das threads
+    def _process_clip(args):
+        i, clip = args
         scene_num      = clip.get("scene_number", i + 1)
         face_video_url = clip.get("kling_url") or clip.get("video_url")
         clip_job_id    = f"{job_id}_scene{scene_num:03d}"
 
+        print(f"🎤 Lip sync clipe {scene_num}/{total} (paralelo)...")
         result = generate_lipsync(
             face_source=face_video_url,
             audio_source=audio_path,
             job_id=clip_job_id,
             model=model,
-            preextracted_vocals=vocals_path,  # ✅ mesmo valor para TODOS os clips
+            preextracted_vocals=vocals_path,
         )
 
         if result["success"]:
-            success_count += 1
-            lipsync_clips.append({
+            return {
                 "success": True, "scene_number": scene_num,
                 "video_url": result["video_url"], "original_url": face_video_url,
-            })
+            }
         else:
-            lipsync_clips.append({
+            return {
                 "success": True, "scene_number": scene_num,
                 "video_url": clip.get("video_url"), "original_url": face_video_url,
                 "lipsync_error": result.get("error"),
-            })
+            }
+
+    # ✅ Dispara todos os clipes em paralelo — tempo total = 1 clipe em vez de N
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    print(f"🚀 Disparando {total} clipes em paralelo...")
+    results_map = {}
+    with ThreadPoolExecutor(max_workers=total) as executor:
+        future_to_idx = {
+            executor.submit(_process_clip, (i, clip)): i
+            for i, clip in enumerate(successful_clips)
+        }
+        for future in as_completed(future_to_idx):
+            clip_result = future.result()
+            results_map[clip_result["scene_number"]] = clip_result
+
+    # Reconstrói lista ordenada por scene_number
+    lipsync_clips = [results_map[k] for k in sorted(results_map)]
+    success_count = sum(1 for c in lipsync_clips if not c.get("lipsync_error"))
 
     jobs_db[job_id]["lipsync_clips"]  = lipsync_clips
     jobs_db[job_id]["lipsync_status"] = "completed"
