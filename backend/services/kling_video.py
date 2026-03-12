@@ -265,13 +265,12 @@ def generate_video_clips_batch(
     bpm: int = None,
     **kwargs
 ) -> list:
-    results = []
-    successful_count = 0
-    print(f"\nGenerating {len(scenes)} video clips via PiAPI (Kling)...")
+    total = len(scenes)
+    print(f"\nGenerating {total} video clips via PiAPI (Kling) — PARALELO...")
     print(f"   Model: {model} | Mode: {mode} | {duration}s | {aspect_ratio}")
 
-    for scene in scenes:
-        result = generate_video_clip(
+    def _generate_one(scene):
+        return generate_video_clip(
             image_path=scene.get("image_path", ""),
             image_url=scene.get("image_url", ""),
             prompt=scene.get("prompt", ""),
@@ -279,13 +278,21 @@ def generate_video_clips_batch(
             aspect_ratio=aspect_ratio,
             duration=duration, mode=mode, model=model, job_id=job_id
         )
-        if result["success"]:
-            successful_count += 1
-        results.append(result)
-        if scene != scenes[-1]:
-            time.sleep(5)
 
-    print(f"\nGenerated {successful_count}/{len(scenes)} clips successfully")
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    # Limita a 6 workers para não sobrecarregar PiAPI rate limit
+    max_workers = min(total, 6)
+    results_map = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_scene = {executor.submit(_generate_one, scene): scene for scene in scenes}
+        for future in as_completed(future_to_scene):
+            result = future.result()
+            results_map[result["scene_number"]] = result
+
+    # Retorna ordenado por scene_number
+    results = [results_map[k] for k in sorted(results_map)]
+    successful_count = sum(1 for r in results if r["success"])
+    print(f"\nGenerated {successful_count}/{total} clips successfully")
     return results
 
 
