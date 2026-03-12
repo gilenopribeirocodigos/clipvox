@@ -14,7 +14,22 @@ from services.merge_video import merge_clips_with_audio, MERGE_OUTPUT_DIR
 from services.kling_lipsync import generate_lipsync
 
 router  = APIRouter()
-jobs_db = {}
+
+# ── Persistência híbrida: memória (rápido) + Supabase (sobrevive a restarts) ──
+from services.job_store import save_job, load_job, load_recent_jobs
+jobs_db: dict = {}
+
+def _init_jobs_db():
+    """Popula jobs_db com jobs recentes do Supabase ao iniciar o servidor."""
+    global jobs_db
+    restored = load_recent_jobs(limit=100)
+    jobs_db.update(restored)
+
+# Roda ao importar o módulo (startup do Render)
+try:
+    _init_jobs_db()
+except Exception as _e:
+    print(f"⚠️ Supabase startup load error: {_e}")
 
 
 def get_virtual_duration(duration: str) -> int:
@@ -86,6 +101,12 @@ async def generate_video(
 
     background_tasks.add_task(process_video_pipeline, job_id)
 
+    # Persiste job inicial no Supabase
+    try:
+        save_job(job_id, jobs_db[job_id])
+    except Exception as _e:
+        print(f"⚠️ save_job (create) error: {_e}")
+
     return {
         "job_id":  job_id,
         "status":  "processing",
@@ -103,7 +124,13 @@ async def generate_video(
 @router.get("/status/{job_id}")
 async def get_job_status(job_id: str):
     if job_id not in jobs_db:
-        raise HTTPException(404, "Job not found")
+        # Tenta recuperar do Supabase (ex: após restart do Render)
+        recovered = load_job(job_id)
+        if recovered:
+            jobs_db[job_id] = recovered
+            print(f"♻️ Job {job_id[:8]} recuperado do Supabase")
+        else:
+            raise HTTPException(404, "Job not found")
     job = jobs_db[job_id]
     return {
         "id":               job["id"],
@@ -142,7 +169,11 @@ async def generate_video_clips(
     mode:             str = "std"
 ):
     if job_id not in jobs_db:
-        raise HTTPException(404, "Job not found")
+        recovered = load_job(job_id)
+        if recovered:
+            jobs_db[job_id] = recovered
+        else:
+            raise HTTPException(404, "Job not found")
     job = jobs_db[job_id]
     if job["status"] != "completed":
         raise HTTPException(400, f"Job ainda nao concluido (status: {job['status']})")
@@ -173,7 +204,11 @@ async def generate_lipsync_video(
     model:            str                  = Form("kling"),
 ):
     if job_id not in jobs_db:
-        raise HTTPException(404, "Job not found")
+        recovered = load_job(job_id)
+        if recovered:
+            jobs_db[job_id] = recovered
+        else:
+            raise HTTPException(404, "Job not found")
     job = jobs_db[job_id]
     audio_path = job.get("audio_path")
     if not audio_path or not os.path.exists(audio_path):
@@ -219,7 +254,11 @@ async def generate_lipsync_video(
 @router.post("/merge/{job_id}")
 async def merge_final_video(job_id: str, background_tasks: BackgroundTasks):
     if job_id not in jobs_db:
-        raise HTTPException(404, "Job not found")
+        recovered = load_job(job_id)
+        if recovered:
+            jobs_db[job_id] = recovered
+        else:
+            raise HTTPException(404, "Job not found")
     job = jobs_db[job_id]
 
     videos_ok  = job.get("videos_status") == "completed"
@@ -342,11 +381,13 @@ def process_video_clips(job_id: str, mode: str = "std"):
         print(f"Clipes gerados: {success_count}/{len(valid_scenes)}")
         jobs_db[job_id]["video_clips"]   = video_results
         jobs_db[job_id]["videos_status"] = "completed"
+        save_job(job_id, jobs_db[job_id])
     except Exception as e:
         print(f"Erro ao gerar clipes: {e}")
         import traceback; traceback.print_exc()
         jobs_db[job_id]["videos_status"] = "failed"
         jobs_db[job_id]["videos_error"]  = str(e)
+        save_job(job_id, jobs_db[job_id])
 
 
 def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
@@ -431,6 +472,7 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
     if first_ok:
         jobs_db[job_id]["lipsync_url"] = first_ok["video_url"]
     print(f"Lip sync: {success_count}/{total} clipes sincronizados")
+    save_job(job_id, jobs_db[job_id])
 
 
 def process_merge(job_id: str):
@@ -462,6 +504,7 @@ def process_merge(job_id: str):
         else:
             jobs_db[job_id]["merge_status"] = "failed"
             jobs_db[job_id]["merge_error"]  = result.get("error")
+        save_job(job_id, jobs_db[job_id])
     except Exception as e:
         import traceback; traceback.print_exc()
         jobs_db[job_id]["merge_status"] = "failed"
@@ -492,3 +535,8 @@ def _preextract_vocals(job_id: str):
 def update_job(job_id: str, **kwargs):
     if job_id in jobs_db:
         jobs_db[job_id].update(kwargs)
+        # Persiste no Supabase — sobrevive a restarts do Render
+        try:
+            save_job(job_id, jobs_db[job_id])
+        except Exception as _e:
+            print(f"⚠️ save_job error: {_e}")
