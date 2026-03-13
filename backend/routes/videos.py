@@ -449,11 +449,12 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
                 "lipsync_error": result.get("error"),
             }
 
-    # ✅ Dispara todos os clipes em paralelo — tempo total = 1 clipe em vez de N
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    print(f"🚀 Disparando {total} clipes em paralelo...")
+    # ✅ Limita workers — 42 threads simultâneas estouram memória no Render free tier
+    # 6 workers = bom equilíbrio entre velocidade e estabilidade
+    max_workers = min(total, 6)
+    print(f"🚀 Disparando {total} clipes em paralelo (max {max_workers} workers)...")
     results_map = {}
-    with ThreadPoolExecutor(max_workers=total) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_idx = {
             executor.submit(_process_clip, (i, clip)): i
             for i, clip in enumerate(successful_clips)
