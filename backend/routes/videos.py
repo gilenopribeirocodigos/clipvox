@@ -239,7 +239,17 @@ async def generate_lipsync_video(
     elif job.get("ref_image_path") and os.path.exists(job["ref_image_path"]):
         face_source = job["ref_image_path"]
     else:
-        raise HTTPException(400, "Nenhuma imagem do personagem encontrada.")
+        # ✅ Fallback: usa imagem da primeira cena no R2 (não some com restart)
+        scenes = job.get("scenes") or []
+        first_scene_url = next(
+            (s.get("image_url") or s.get("r2_url") for s in scenes if s.get("image_url") or s.get("r2_url")),
+            None
+        )
+        if first_scene_url:
+            face_source = first_scene_url
+            print(f"⚠️ ref_image perdida após restart — usando imagem da cena 1: {first_scene_url[:60]}")
+        else:
+            raise HTTPException(400, "Nenhuma imagem do personagem encontrada.")
 
     if job.get("lipsync_status") == "processing":
         return {"message": "Lip sync ja em andamento", "job_id": job_id}
