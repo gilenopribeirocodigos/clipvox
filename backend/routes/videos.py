@@ -4,6 +4,7 @@ from typing import Optional
 import os
 import uuid
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import UPLOAD_DIR, CREDITS_PER_VIDEO
 from services.audio_analysis import analyze_audio_cinematic
 from services.scene_calculator import calculate_cinematic_scenes, get_scene_summary
@@ -94,14 +95,13 @@ async def generate_video(
         "lipsync_status": None,
         "lipsync_url":    None,
         "lipsync_clips":  None,
-        "vocals_path":    None,   # vocals pre-extraidos pelo StemSplit
+        "vocals_path":    None,
         "merge_status":   None,
         "merge_url":      None,
     }
 
     background_tasks.add_task(process_video_pipeline, job_id)
 
-    # Persiste job inicial no Supabase
     try:
         save_job(job_id, jobs_db[job_id])
     except Exception as _e:
@@ -124,7 +124,6 @@ async def generate_video(
 @router.get("/status/{job_id}")
 async def get_job_status(job_id: str):
     if job_id not in jobs_db:
-        # Tenta recuperar do Supabase (ex: após restart do Render)
         recovered = load_job(job_id)
         if recovered:
             jobs_db[job_id] = recovered
@@ -200,6 +199,7 @@ async def generate_lipsync_video(
     job_id:           str,
     background_tasks: BackgroundTasks,
     face_image:       Optional[UploadFile] = File(None),
+    audio:            Optional[UploadFile] = File(None),   # ✅ re-upload após restart
     face_url:         str                  = Form(""),
     model:            str                  = Form("kling"),
 ):
@@ -210,9 +210,22 @@ async def generate_lipsync_video(
         else:
             raise HTTPException(404, "Job not found")
     job = jobs_db[job_id]
-    audio_path = job.get("audio_path")
-    if not audio_path or not os.path.exists(audio_path):
-        raise HTTPException(400, "Audio do job nao encontrado")
+
+    # ✅ Re-upload de áudio após restart do servidor (/tmp perdido)
+    if audio and audio.filename:
+        audio_filename = f"{job_id}_{audio.filename}"
+        audio_path     = os.path.join(UPLOAD_DIR, audio_filename)
+        with open(audio_path, "wb") as f:
+            f.write(await audio.read())
+        jobs_db[job_id]["audio_path"] = audio_path
+        # Reseta vocals_path para forçar nova extração com o novo arquivo
+        jobs_db[job_id]["vocals_path"] = None
+        update_job(job_id, audio_path=audio_path, vocals_path=None)
+        print(f"✅ Áudio re-uploaded para job {job_id}: {audio_path}")
+    else:
+        audio_path = job.get("audio_path")
+        if not audio_path or not os.path.exists(audio_path):
+            raise HTTPException(400, "Audio do job nao encontrado")
 
     face_source = None
     if face_image:
@@ -239,8 +252,9 @@ async def generate_lipsync_video(
     jobs_db[job_id]["lipsync_url"]    = None
     jobs_db[job_id]["lipsync_clips"]  = None
 
-    background_tasks.add_task(process_lipsync, job_id=job_id, face_source=face_source,
-                               audio_path=audio_path, model=model)
+    # ✅ Pre-extrai vocals com novo áudio antes de disparar background task
+    background_tasks.add_task(_preextract_and_lipsync, job_id=job_id,
+                               face_source=face_source, audio_path=audio_path, model=model)
 
     return {
         "job_id":      job_id,
@@ -390,6 +404,12 @@ def process_video_clips(job_id: str, mode: str = "std"):
         save_job(job_id, jobs_db[job_id])
 
 
+def _preextract_and_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
+    """Extrai vocals e depois dispara o lip sync — usado no re-upload de áudio."""
+    _preextract_vocals(job_id)
+    process_lipsync(job_id=job_id, face_source=face_source, audio_path=audio_path, model=model)
+
+
 def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
     """Aplica lip sync em CADA clipe individualmente."""
     job = jobs_db.get(job_id, {})
@@ -404,8 +424,7 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
         jobs_db[job_id]["lipsync_error"]  = "Nenhum video_clip disponivel."
         return
 
-    # ✅ FIX: aguarda vocals_path ser definido antes de iniciar o loop
-    # Evita race condition onde Scene 1 começa antes do StemSplit terminar
+    # Aguarda vocals_path ser definido antes de iniciar o loop
     vocals_path = jobs_db.get(job_id, {}).get("vocals_path")
     if not vocals_path:
         print("   ⏳ Aguardando StemSplit finalizar extração de vocals...")
@@ -420,8 +439,6 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
 
     total = len(successful_clips)
 
-    # ✅ Prepara argumentos de cada clipe antecipadamente (trim + upload áudio)
-    # para evitar overhead repetido dentro das threads
     def _process_clip(args):
         i, clip = args
         scene_num      = clip.get("scene_number", i + 1)
@@ -449,8 +466,7 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
                 "lipsync_error": result.get("error"),
             }
 
-    # ✅ Limita workers — 42 threads simultâneas estouram memória no Render free tier
-    # 6 workers = bom equilíbrio entre velocidade e estabilidade
+    # ✅ Máximo 6 workers — evita OOM no Render free tier (512MB)
     max_workers = min(total, 6)
     print(f"🚀 Disparando {total} clipes em paralelo (max {max_workers} workers)...")
     results_map = {}
@@ -463,7 +479,6 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
             clip_result = future.result()
             results_map[clip_result["scene_number"]] = clip_result
 
-    # Reconstrói lista ordenada por scene_number
     lipsync_clips = [results_map[k] for k in sorted(results_map)]
     success_count = sum(1 for c in lipsync_clips if not c.get("lipsync_error"))
 
@@ -484,7 +499,6 @@ def process_merge(job_id: str):
     try:
         lipsync_clips = job.get("lipsync_clips")
         clips         = lipsync_clips if lipsync_clips else job.get("video_clips", [])
-        clips_source  = "lip sync" if lipsync_clips else "originais"
 
         successful = sorted(
             [c for c in clips if c.get("success") and c.get("video_url")],
@@ -513,10 +527,7 @@ def process_merge(job_id: str):
 
 
 def _preextract_vocals(job_id: str):
-    """
-    Extrai vocals com StemSplit.io — substitui LALAL.AI (que exigia premium).
-    Roda 1x por job, resultado reutilizado em todos os clips de lip sync.
-    """
+    """Extrai vocals com StemSplit.io — reutilizado em todos os clips de lip sync."""
     try:
         job        = jobs_db.get(job_id, {})
         audio_path = job.get("audio_path")
@@ -536,7 +547,6 @@ def _preextract_vocals(job_id: str):
 def update_job(job_id: str, **kwargs):
     if job_id in jobs_db:
         jobs_db[job_id].update(kwargs)
-        # Persiste no Supabase — sobrevive a restarts do Render
         try:
             save_job(job_id, jobs_db[job_id])
         except Exception as _e:
