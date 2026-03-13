@@ -62,6 +62,50 @@ function Navbar({ onBack, credits }) {
   )
 }
 
+function ResumeJobBox({ onResume }) {
+  const [jobId, setJobId] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  const handleResume = async () => {
+    const id = jobId.trim()
+    if (!id) return
+    setLoading(true); setError(null)
+    try {
+      const res = await fetch(`${API_URL}/api/videos/status/${id}`)
+      if (!res.ok) throw new Error('Job não encontrado')
+      const data = await res.json()
+      onResume(id, data)
+    } catch(e) {
+      setError(e.message || 'Erro ao buscar job')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div style={{ maxWidth:780, margin:'0 auto', padding:'0 24px 40px' }}>
+      <div style={{ background:'rgba(16,16,24,.7)', border:'1px solid rgba(255,255,255,.07)', borderRadius:14, padding:'18px 20px' }}>
+        <div style={{ color:'#6b7280', fontSize:12, fontWeight:600, letterSpacing:.5, marginBottom:10 }}>🔁 RETOMAR JOB EXISTENTE</div>
+        <div style={{ display:'flex', gap:8 }}>
+          <input
+            value={jobId} onChange={e => setJobId(e.target.value)}
+            placeholder="Cole o Job ID aqui (ex: 866533e9-c529-...)"
+            style={{ flex:1, padding:'10px 14px', borderRadius:10, background:'rgba(255,255,255,.05)', border:'1px solid rgba(255,255,255,.1)', color:'#fff', fontSize:12, outline:'none', fontFamily:"'DM Sans',sans-serif" }}
+            onKeyDown={e => e.key === 'Enter' && handleResume()}
+          />
+          <button onClick={handleResume} disabled={loading || !jobId.trim()}
+            style={{ padding:'10px 18px', background: jobId.trim() ? 'rgba(249,115,22,.15)' : 'rgba(255,255,255,.04)', border:`1px solid ${jobId.trim() ? 'rgba(249,115,22,.4)' : 'rgba(255,255,255,.08)'}`, borderRadius:10, color: jobId.trim() ? '#f97316' : '#4b5563', fontSize:13, fontWeight:600, cursor: jobId.trim() ? 'pointer' : 'not-allowed', whiteSpace:'nowrap' }}>
+            {loading ? '⏳' : '▶ Retomar'}
+          </button>
+        </div>
+        {error && <div style={{ color:'#ef4444', fontSize:11, marginTop:8 }}>❌ {error}</div>}
+        <div style={{ color:'#374151', fontSize:10, marginTop:8 }}>O Job ID aparece na URL ou foi exibido no início da geração</div>
+      </div>
+    </div>
+  )
+}
+
 function UploadZone({ onStart }) {
   const [dragging, setDragging] = useState(false)
   const [file, setFile] = useState(null)
@@ -301,7 +345,11 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
   useEffect(() => {
     const s = jobStatus?.videos_status
     if (s === 'processing' || s === 'completed' || s === 'failed') setVideosStatus(s)
-    if (jobStatus?.video_clips) setVideoClips(jobStatus.video_clips)
+    if (jobStatus?.video_clips) {
+      setVideoClips(jobStatus.video_clips)
+      // ✅ Auto-notifica Dashboard se vídeos já estão prontos (recuperado do Supabase)
+      if (s === 'completed' && onVideosCompleted) onVideosCompleted(jobStatus.video_clips)
+    }
   }, [jobStatus])
 
   useEffect(() => {
@@ -422,29 +470,38 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 🎤 LIP SYNC PANEL — NOVO COMPONENTE
+// 🎤 LIP SYNC PANEL
 // ══════════════════════════════════════════════════════════════════════════════
-function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted }) {
-  const [status,   setStatus]   = useState(null) // null | 'processing' | 'completed' | 'failed'
-  const [lipUrl,   setLipUrl]   = useState(null)
-  const [error,    setError]    = useState(null)
-  const [model,    setModel]    = useState('kling')
-  const [skipped,  setSkipped]  = useState(false)
-  const pollRef = useRef()
+function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncStatus }) {
+  // ✅ Se chegar com 'processing' do Supabase, consideramos travado (servidor reiniciou)
+  const isStuck = initialLipSyncStatus === 'processing'
+  const [status,    setStatus]    = useState(isStuck ? 'stuck' : null)
+  const [lipUrl,    setLipUrl]    = useState(null)
+  const [error,     setError]     = useState(null)
+  const [model,     setModel]     = useState('kling')
+  const [skipped,   setSkipped]   = useState(false)
+  const [audioFile, setAudioFile] = useState(null)   // ✅ re-upload de áudio após restart
+  const pollRef  = useRef()
+  const audioRef = useRef()
 
   useEffect(() => {
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
 
   const handleStart = async () => {
+    // Se stuck, exige áudio novo
+    if (status === 'stuck' && !audioFile) {
+      setError('O servidor foi reiniciado e o áudio foi perdido. Selecione o arquivo de áudio para refazer.')
+      return
+    }
     setStatus('processing'); setError(null)
     try {
       const formData = new FormData()
       formData.append('model', model)
+      if (audioFile) formData.append('audio', audioFile)  // ✅ re-upload quando necessário
       const res = await fetch(`${API_URL}/api/videos/lipsync/${jobId}`, { method:'POST', body:formData })
       if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `Erro ${res.status}`) }
 
-      // Polling do status
       pollRef.current = setInterval(async () => {
         try {
           const r = await fetch(`${API_URL}/api/videos/status/${jobId}`)
@@ -463,7 +520,7 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted }) {
       }, 5000)
     } catch(err) {
       setError(err.message || 'Erro ao iniciar lip sync')
-      setStatus('failed')
+      setStatus('stuck')  // volta para stuck para permitir retry com áudio
     }
   }
 
@@ -472,41 +529,70 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted }) {
     if (onLipSyncCompleted) onLipSyncCompleted(null)
   }
 
-  const successClips = (videoClips || []).filter(c => c.success && c.video_url)
-
-  // Se pulou ou concluiu, não mostra mais
   if (skipped) return null
 
   return (
-    <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(139,92,246,.25)', borderRadius:16, padding:24, marginTop:16, animation:'fadeUp .5s ease' }}>
+    <div style={{ background:'rgba(16,16,24,.85)', border:`1px solid ${isStuck && status === 'stuck' ? 'rgba(234,179,8,.3)' : 'rgba(139,92,246,.25)'}`, borderRadius:16, padding:24, marginTop:16, animation:'fadeUp .5s ease' }}>
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20 }}>
         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
           <span style={{ fontSize:20 }}>🎤</span>
           <div>
             <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:15, letterSpacing:2, color:'#fff' }}>LIP SYNC — SINCRONIZAÇÃO DE FALA</div>
-            <div style={{ color:'#6b7280', fontSize:11, marginTop:1 }}>LALAL.AI + Kling AI · Vocals isolados → Boca sincronizada</div>
+            <div style={{ color:'#6b7280', fontSize:11, marginTop:1 }}>StemSplit + Kling AI · Vocals isolados → Boca sincronizada</div>
           </div>
         </div>
-        <div style={{ background:'rgba(139,92,246,.1)', border:'1px solid rgba(139,92,246,.3)', borderRadius:8, padding:'4px 12px', color:'#a78bfa', fontSize:11, fontWeight:600 }}>
-          ✨ Novo
-        </div>
+        {status !== 'stuck' && (
+          <div style={{ background:'rgba(139,92,246,.1)', border:'1px solid rgba(139,92,246,.3)', borderRadius:8, padding:'4px 12px', color:'#a78bfa', fontSize:11, fontWeight:600 }}>✨ Novo</div>
+        )}
       </div>
 
-      {/* Info box explicativo */}
-      {!status && (
-        <div style={{ background:'rgba(139,92,246,.06)', border:'1px solid rgba(139,92,246,.15)', borderRadius:10, padding:'12px 16px', marginBottom:16 }}>
-          <div style={{ color:'#a78bfa', fontSize:12, fontWeight:600, marginBottom:6 }}>🧠 Como funciona:</div>
-          <div style={{ color:'#9ca3af', fontSize:12, lineHeight:1.8 }}>
-            1️⃣ LALAL.AI extrai <strong style={{color:'#fff'}}>apenas a voz</strong> da música (remove instrumentos)<br/>
-            2️⃣ Kling AI sincroniza a boca do personagem com a voz limpa<br/>
-            3️⃣ Resultado: <strong style={{color:'#fff'}}>lábios movendo em perfeita sincronia</strong> com a letra
+      {/* ✅ ESTADO TRAVADO — servidor reiniciou */}
+      {status === 'stuck' && (
+        <div style={{ marginBottom:16 }}>
+          <div style={{ background:'rgba(234,179,8,.08)', border:'1px solid rgba(234,179,8,.25)', borderRadius:10, padding:'14px 16px', marginBottom:16 }}>
+            <div style={{ color:'#eab308', fontSize:13, fontWeight:600, marginBottom:6 }}>⚠️ Lip sync interrompido</div>
+            <div style={{ color:'#9ca3af', fontSize:12, lineHeight:1.7 }}>
+              O servidor foi reiniciado durante o processamento e o arquivo de áudio foi perdido do servidor.<br/>
+              <strong style={{ color:'#fff' }}>Faça upload da música novamente</strong> para refazer o lip sync — os vídeos estão salvos.
+            </div>
           </div>
+
+          {/* Upload de áudio */}
+          <div onClick={() => audioRef.current.click()}
+            style={{ border: audioFile ? '2px dashed rgba(139,92,246,.5)' : '2px dashed rgba(139,92,246,.25)', borderRadius:12, padding:'18px', textAlign:'center', cursor:'pointer', background:'rgba(139,92,246,.04)', marginBottom:14 }}>
+            <input ref={audioRef} type="file" accept="audio/*" style={{ display:'none' }}
+              onChange={e => { const f = e.target.files[0]; if (f) setAudioFile(f) }} />
+            {audioFile
+              ? <><div style={{ fontSize:24, marginBottom:6 }}>🎵</div><div style={{ color:'#a78bfa', fontSize:13, fontWeight:600 }}>{audioFile.name}</div><div style={{ color:'#6b7280', fontSize:11, marginTop:2 }}>Clique para trocar</div></>
+              : <><div style={{ fontSize:28, marginBottom:6 }}>📂</div><div style={{ color:'#fff', fontSize:13, fontWeight:600, marginBottom:4 }}>Selecionar arquivo de áudio</div><div style={{ color:'#6b7280', fontSize:11 }}>MP3 · WAV · OGG · M4A</div></>
+            }
+          </div>
+
+          {error && <div style={{ background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.2)', borderRadius:8, padding:'10px 14px', marginBottom:12, color:'#ef4444', fontSize:12 }}>❌ {error}</div>}
+
+          <button onClick={handleStart} disabled={!audioFile}
+            style={{ width:'100%', padding:'13px', background: audioFile ? 'linear-gradient(135deg,#7c3aed,#6d28d9)' : 'rgba(60,60,70,.5)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor: audioFile ? 'pointer' : 'not-allowed', boxShadow: audioFile ? '0 4px 18px rgba(124,58,237,.3)' : 'none', marginBottom:10, transition:'all .25s' }}>
+            🎤 Refazer Lip Sync com novo áudio
+          </button>
+          <button onClick={handleSkip}
+            style={{ width:'100%', padding:'10px', background:'transparent', color:'#4b5563', border:'1px solid rgba(255,255,255,.07)', borderRadius:10, fontSize:13, cursor:'pointer' }}>
+            Pular — ir direto para o Merge
+          </button>
         </div>
       )}
 
-      {!status && (
+      {/* ESTADO INICIAL — normal */}
+      {status === null && (
         <>
-          {/* Seleção de modelo */}
+          <div style={{ background:'rgba(139,92,246,.06)', border:'1px solid rgba(139,92,246,.15)', borderRadius:10, padding:'12px 16px', marginBottom:16 }}>
+            <div style={{ color:'#a78bfa', fontSize:12, fontWeight:600, marginBottom:6 }}>🧠 Como funciona:</div>
+            <div style={{ color:'#9ca3af', fontSize:12, lineHeight:1.8 }}>
+              1️⃣ StemSplit extrai <strong style={{color:'#fff'}}>apenas a voz</strong> da música (remove instrumentos)<br/>
+              2️⃣ Kling AI sincroniza a boca do personagem com a voz limpa<br/>
+              3️⃣ Resultado: <strong style={{color:'#fff'}}>lábios movendo em perfeita sincronia</strong> com a letra
+            </div>
+          </div>
+
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:16 }}>
             {[
               { value:'kling',      label:'Kling Standard', desc:'~$0.10/5s', quality:'Bom' },
@@ -523,22 +609,18 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted }) {
 
           <div style={{ background:'rgba(139,92,246,.05)', border:'1px solid rgba(139,92,246,.12)', borderRadius:10, padding:'10px 14px', marginBottom:16 }}>
             <div style={{ color:'#a78bfa', fontSize:11, fontWeight:600 }}>⏱️ TEMPO ESTIMADO</div>
-            <div style={{ color:'#6b7280', fontSize:11, marginTop:2 }}>LALAL.AI ~30s + Kling lip sync ~2-5min = <span style={{ color:'#fff', fontWeight:600 }}>~5-6 min no total</span></div>
+            <div style={{ color:'#6b7280', fontSize:11, marginTop:2 }}>StemSplit ~30s + Kling lip sync ~2-5min = <span style={{ color:'#fff', fontWeight:600 }}>~5-6 min no total</span></div>
           </div>
 
           {error && (<div style={{ background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.2)', borderRadius:8, padding:'10px 14px', marginBottom:16, color:'#ef4444', fontSize:12 }}>❌ {error}</div>)}
 
           <button onClick={handleStart}
-            style={{ width:'100%', padding:'13px', background:'linear-gradient(135deg,#7c3aed,#6d28d9)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer', boxShadow:'0 4px 18px rgba(124,58,237,.3)', marginBottom:10, transition:'all .25s' }}
-            onMouseEnter={e => e.target.style.boxShadow='0 6px 24px rgba(124,58,237,.5)'}
-            onMouseLeave={e => e.target.style.boxShadow='0 4px 18px rgba(124,58,237,.3)'}>
+            style={{ width:'100%', padding:'13px', background:'linear-gradient(135deg,#7c3aed,#6d28d9)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer', boxShadow:'0 4px 18px rgba(124,58,237,.3)', marginBottom:10, transition:'all .25s' }}>
             🎤 Aplicar Lip Sync na Música
           </button>
 
           <button onClick={handleSkip}
-            style={{ width:'100%', padding:'10px', background:'transparent', color:'#4b5563', border:'1px solid rgba(255,255,255,.07)', borderRadius:10, fontSize:13, cursor:'pointer', transition:'all .25s' }}
-            onMouseEnter={e => { e.target.style.color='#9ca3af'; e.target.style.borderColor='rgba(255,255,255,.15)' }}
-            onMouseLeave={e => { e.target.style.color='#4b5563'; e.target.style.borderColor='rgba(255,255,255,.07)' }}>
+            style={{ width:'100%', padding:'10px', background:'transparent', color:'#4b5563', border:'1px solid rgba(255,255,255,.07)', borderRadius:10, fontSize:13, cursor:'pointer', transition:'all .25s' }}>
             Pular — ir direto para o Merge
           </button>
         </>
@@ -548,7 +630,7 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted }) {
         <div style={{ textAlign:'center', padding:'32px 0' }}>
           <div style={{ width:44, height:44, margin:'0 auto 16px', border:'3px solid rgba(139,92,246,.2)', borderTop:'3px solid #7c3aed', borderRadius:'50%', animation:'spin .9s linear infinite' }} />
           <div style={{ color:'#fff', fontSize:14, fontWeight:600, marginBottom:6 }}>Aplicando Lip Sync...</div>
-          <div style={{ color:'#6b7280', fontSize:12, marginBottom:8 }}>LALAL.AI extraindo vocals → Kling sincronizando lábios</div>
+          <div style={{ color:'#6b7280', fontSize:12, marginBottom:8 }}>StemSplit extraindo vocals → Kling sincronizando lábios</div>
           <div style={{ color:'#a78bfa', fontSize:11, animation:'pulse 1.5s ease infinite' }}>⏳ Aguarde ~5-6 minutos</div>
         </div>
       )}
@@ -772,6 +854,41 @@ export default function Dashboard({ onBack }) {
 
   useEffect(() => { return () => { if (pollRef.current) clearInterval(pollRef.current) } }, [])
 
+  // ✅ Recupera estado dos clipes e lipsync do Supabase ao carregar jobStatus
+  useEffect(() => {
+    if (!jobStatus) return
+    // Clipes prontos
+    if (jobStatus.videos_status === 'completed' && jobStatus.video_clips) {
+      setCompletedClips(jobStatus.video_clips)
+    }
+    // Lip sync já concluído
+    if (jobStatus.lipsync_status === 'completed') {
+      setLipSyncDone(true)
+      setLipSyncUrl(jobStatus.lipsync_url || null)
+    }
+  }, [jobStatus])
+
+  // ✅ Retomar job existente pelo ID
+  const handleResume = (id, data) => {
+    setJobId(id)
+    setJobStatus(data)
+    setFileName(data.file_name || `job-${id.slice(0,8)}`)
+    setPhase('processing')
+
+    // Inicia polling
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/videos/status/${id}`)
+        if (!res.ok) return
+        const status = await res.json()
+        setJobStatus(status)
+        if (status.status === 'completed' || status.status === 'failed') {
+          clearInterval(pollRef.current)
+        }
+      } catch(e) { console.warn('Polling:', e) }
+    }, 3000)
+  }
+
   const startGeneration = async ({ file, desc, style, duration, aspectRatio, resolution, refImage }) => {
     try {
       setFileName(file.name); setPhase('processing'); setCredits(c => c - 100)
@@ -836,11 +953,13 @@ export default function Dashboard({ onBack }) {
     if (clips && clips.some(c => c.success)) setCompletedClips(clips)
   }
 
-  // Chamado pelo LipSyncPanel quando conclui OU quando usuário pula
   const handleLipSyncCompleted = (url) => {
     setLipSyncDone(true)
     setLipSyncUrl(url || null)
   }
+
+  // ✅ Lip sync estava rodando quando o servidor reiniciou?
+  const lipSyncWasStuck = jobStatus?.lipsync_status === 'processing' && !lipSyncDone
 
   if (phase === 'upload') {
     return (
@@ -854,6 +973,7 @@ export default function Dashboard({ onBack }) {
           </div>
         )}
         <UploadZone onStart={startGeneration} />
+        <ResumeJobBox onResume={handleResume} />
       </div>
     )
   }
@@ -885,24 +1005,24 @@ export default function Dashboard({ onBack }) {
 
           {jobStatus?.status === 'completed' && jobId && (
             <>
-              {/* PASSO 1: Gerar clipes */}
               <VideoClipsPanel
                 jobId={jobId}
                 jobStatus={jobStatus}
                 onVideosCompleted={handleVideosCompleted}
               />
 
-              {/* PASSO 2: Lip Sync (aparece após clipes prontos) */}
-              {completedClips && completedClips.some(c => c.success) && !lipSyncDone && (
+              {/* PASSO 2: Lip Sync — aparece quando clipes prontos OU quando estava rodando (stuck) */}
+              {(completedClips?.some(c => c.success) || lipSyncWasStuck) && !lipSyncDone && (
                 <LipSyncPanel
                   jobId={jobId}
                   videoClips={completedClips}
                   onLipSyncCompleted={handleLipSyncCompleted}
+                  initialLipSyncStatus={jobStatus?.lipsync_status}
                 />
               )}
 
-              {/* PASSO 3: Merge Final (aparece após lip sync concluir ou pular) */}
-              {completedClips && completedClips.some(c => c.success) && lipSyncDone && (
+              {/* PASSO 3: Merge Final */}
+              {completedClips?.some(c => c.success) && lipSyncDone && (
                 <MergePanel
                   jobId={jobId}
                   videoClips={completedClips}
