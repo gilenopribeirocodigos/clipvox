@@ -477,7 +477,9 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
             }
 
     # ✅ Máximo 6 workers — evita OOM no Render free tier (512MB)
-    max_workers = min(total, 6)
+    # ✅ Free tier 512MB: 2 workers = ~100MB RAM, estável
+    # Para upgrade pago pode aumentar para 4-6
+    max_workers = min(total, 2)
     print(f"🚀 Disparando {total} clipes em paralelo (max {max_workers} workers)...")
     results_map = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
