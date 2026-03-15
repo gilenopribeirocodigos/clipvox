@@ -210,6 +210,67 @@ async def generate_video_clips(
     }
 
 
+@router.post("/regen-scene/{job_id}/{scene_number}")
+async def regen_scene_image(
+    job_id:       str,
+    scene_number: int,
+    background_tasks: BackgroundTasks,
+    prompt: str = Form(""),
+):
+    """Regenera a imagem de UMA cena específica com prompt opcionalmente editado."""
+    if job_id not in jobs_db:
+        recovered = load_job(job_id)
+        if recovered:
+            jobs_db[job_id] = recovered
+        else:
+            raise HTTPException(404, "Job not found")
+    job    = jobs_db[job_id]
+    scenes = job.get("scenes") or []
+    scene  = next((s for s in scenes if s.get("scene_number") == scene_number), None)
+    if not scene:
+        raise HTTPException(404, f"Cena {scene_number} não encontrada")
+
+    # Usa prompt editado ou o original
+    final_prompt = prompt.strip() or scene.get("prompt", "")
+    if not final_prompt:
+        raise HTTPException(400, "Prompt não encontrado para esta cena")
+
+    background_tasks.add_task(
+        process_regen_scene, job_id=job_id, scene_number=scene_number,
+        prompt=final_prompt
+    )
+    return {"job_id": job_id, "scene_number": scene_number, "status": "regenerating",
+            "message": f"Regenerando cena {scene_number}..."}
+
+
+@router.post("/regen-video/{job_id}/{scene_number}")
+async def regen_video_clip(
+    job_id:       str,
+    scene_number: int,
+    background_tasks: BackgroundTasks,
+    mode: str = Form("std"),
+):
+    """Regenera o vídeo de UMA cena específica."""
+    if job_id not in jobs_db:
+        recovered = load_job(job_id)
+        if recovered:
+            jobs_db[job_id] = recovered
+        else:
+            raise HTTPException(404, "Job not found")
+    job    = jobs_db[job_id]
+    scenes = job.get("scenes") or []
+    scene  = next((s for s in scenes if s.get("scene_number") == scene_number), None)
+    if not scene or not scene.get("image_url"):
+        raise HTTPException(404, f"Cena {scene_number} sem imagem disponível")
+
+    background_tasks.add_task(
+        process_regen_video, job_id=job_id, scene_number=scene_number,
+        scene=scene, mode=mode
+    )
+    return {"job_id": job_id, "scene_number": scene_number, "status": "regenerating",
+            "message": f"Regenerando vídeo da cena {scene_number}..."}
+
+
 @router.post("/cancel/{job_id}")
 async def cancel_job(job_id: str):
     """Cancela job em andamento — bloqueia novos gastos na PiAPI/StemSplit."""
@@ -538,6 +599,94 @@ def process_retry_clips(job_id: str, failed_scenes: list, mode: str = "std"):
         import traceback; traceback.print_exc()
         jobs_db[job_id]["videos_status"] = "failed"
         jobs_db[job_id]["videos_error"]  = str(e)
+        save_job(job_id, jobs_db[job_id])
+
+
+def process_regen_scene(job_id: str, scene_number: int, prompt: str):
+    """Regenera imagem de uma única cena e atualiza o job."""
+    try:
+        job  = jobs_db.get(job_id, {})
+        if job.get("cancelled"):
+            return
+        from services.video_generation import generate_scene_image
+        # Marca cena como regenerando
+        scenes = jobs_db[job_id].get("scenes") or []
+        for s in scenes:
+            if s.get("scene_number") == scene_number:
+                s["regenerating"] = True
+        jobs_db[job_id]["scenes"] = scenes
+        save_job(job_id, jobs_db[job_id])
+
+        result = generate_scene_image(
+            prompt=prompt,
+            scene_number=scene_number,
+            style=job.get("style", "realistic"),
+            aspect_ratio=job.get("aspect_ratio", "16:9"),
+            resolution=job.get("resolution", "720p"),
+            reference_imgbb_url=None,
+            job_id=job_id,
+        )
+        # Atualiza a cena na lista
+        scenes = jobs_db[job_id].get("scenes") or []
+        for i, s in enumerate(scenes):
+            if s.get("scene_number") == scene_number:
+                result["prompt"] = prompt  # preserva prompt editado
+                result["regenerating"] = False
+                scenes[i] = result
+                break
+        jobs_db[job_id]["scenes"] = scenes
+        save_job(job_id, jobs_db[job_id])
+        print(f"✅ Cena {scene_number} regenerada — job {job_id[:8]}")
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        scenes = jobs_db.get(job_id, {}).get("scenes") or []
+        for s in scenes:
+            if s.get("scene_number") == scene_number:
+                s["regenerating"] = False
+        save_job(job_id, jobs_db[job_id])
+
+
+def process_regen_video(job_id: str, scene_number: int, scene: dict, mode: str):
+    """Regenera vídeo de uma única cena e atualiza video_clips."""
+    try:
+        job = jobs_db.get(job_id, {})
+        if job.get("cancelled"):
+            return
+        from services.kling_video import generate_video_clip
+        # Marca como regenerando
+        clips = jobs_db[job_id].get("video_clips") or []
+        for c in clips:
+            if c.get("scene_number") == scene_number:
+                c["regenerating"] = True
+        jobs_db[job_id]["video_clips"] = clips
+        save_job(job_id, jobs_db[job_id])
+
+        bpm    = job.get("audio_bpm", 120)
+        aspect = job.get("aspect_ratio", "16:9")
+        result = generate_video_clip(
+            scene=scene, bpm=bpm, aspect_ratio=aspect, mode=mode, job_id=job_id
+        )
+        # Substitui no video_clips
+        clips = jobs_db[job_id].get("video_clips") or []
+        found = False
+        for i, c in enumerate(clips):
+            if c.get("scene_number") == scene_number:
+                result["regenerating"] = False
+                clips[i] = result
+                found = True
+                break
+        if not found:
+            result["regenerating"] = False
+            clips.append(result)
+        jobs_db[job_id]["video_clips"] = sorted(clips, key=lambda x: x.get("scene_number", 0))
+        save_job(job_id, jobs_db[job_id])
+        print(f"✅ Vídeo cena {scene_number} regenerado — job {job_id[:8]}")
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        clips = jobs_db.get(job_id, {}).get("video_clips") or []
+        for c in clips:
+            if c.get("scene_number") == scene_number:
+                c["regenerating"] = False
         save_job(job_id, jobs_db[job_id])
 
 
