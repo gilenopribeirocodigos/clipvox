@@ -12,8 +12,10 @@ Model: gemini | task_type: nano-banana-pro
 🆕 FEATURES:
 - ✅ Aspect Ratio (16:9, 9:16, 1:1, 4:3)
 - ✅ Visual Styles (10+ estilos)
-- ✅ Reference Image → face consistency via image_urls
+- ✅ Reference Image → face consistency via image_urls (até 3 fotos)
 - ✅ $0.105/imagem (Nano Banana Pro)
+- ✅ Save progressivo a cada 5 cenas no Supabase
+- ✅ Cancelamento antes de cada chamada de API
 """
 
 import os
@@ -30,6 +32,16 @@ from config import (
     R2_PUBLIC_URL,
     get_r2_client
 )
+
+# ── Cache de jobs para checagem de cancelamento e save progressivo ────────────
+# Referência ao jobs_db do videos.py injetada via set_jobs_cache()
+jobs_cache: dict = {}
+
+def set_jobs_cache(db: dict):
+    """Injeta referência ao jobs_db para checar cancelamentos sem importação circular."""
+    global jobs_cache
+    jobs_cache = db
+
 
 # ── PiAPI ────────────────────────────────────────────────────────────────────
 PIAPI_KEY      = os.getenv("PIAPI_API_KEY", "")
@@ -112,24 +124,19 @@ def _generate_nano_banana_image(
 ) -> Optional[str]:
     """
     Chama Nano Banana Pro via PiAPI.
-
     COM referência → image_urls = [url1, url2, ...] (mantém rosto)
     SEM referência → text-to-image puro
-
     Retorna URL da imagem gerada, ou None se falhar.
     """
     if not PIAPI_KEY:
         print("   ❌ PIAPI_API_KEY não configurada")
         return None
 
-    # Enriquece o prompt com o estilo
     style_config = VISUAL_STYLES.get(style, VISUAL_STYLES["realistic"])
     style_prefix = style_config.get("prefix", "")
     full_prompt  = f"{style_prefix}, {prompt}" if style_prefix else prompt
+    nb_aspect    = NB_ASPECT_RATIO.get(aspect_ratio, "16:9")
 
-    nb_aspect = NB_ASPECT_RATIO.get(aspect_ratio, "16:9")
-
-    # ── Payload ────────────────────────────────────────────────────────────────
     payload_input = {
         "prompt":       full_prompt[:2000],
         "aspect_ratio": nb_aspect,
@@ -148,7 +155,6 @@ def _generate_nano_banana_image(
         "task_type": "nano-banana-pro",
         "input":     payload_input,
     }
-
     headers = {
         "Content-Type": "application/json",
         "X-API-Key":    PIAPI_KEY,
@@ -159,10 +165,7 @@ def _generate_nano_banana_image(
     try:
         resp = requests.post(PIAPI_BASE_URL, headers=headers, json=payload, timeout=30)
         print(f"   📥 HTTP {resp.status_code}: {resp.text[:300]}")
-
-        data = resp.json()
-
-        # PiAPI retorna task_id para polling
+        data    = resp.json()
         task_id = (
             data.get("data", {}).get("task_id")
             or data.get("task_id")
@@ -173,18 +176,12 @@ def _generate_nano_banana_image(
 
         print(f"   ✅ Task criada: {task_id}")
 
-        # ── Polling ────────────────────────────────────────────────────────────
         poll_headers = {"X-API-Key": PIAPI_KEY}
         for elapsed in range(10, 301, 10):
             time.sleep(10)
             try:
-                r  = requests.get(
-                    f"{PIAPI_BASE_URL}/{task_id}",
-                    headers=poll_headers,
-                    timeout=15
-                )
+                r  = requests.get(f"{PIAPI_BASE_URL}/{task_id}", headers=poll_headers, timeout=15)
                 td = r.json()
-
                 status = (
                     td.get("data", {}).get("status")
                     or td.get("status", "")
@@ -192,12 +189,9 @@ def _generate_nano_banana_image(
                 print(f"   ⏳ Cena {scene_number} — {status} ({elapsed}s)")
 
                 if status in ("completed", "succeed", "success"):
-                    output = (
-                        td.get("data", {}).get("output", {})
-                        or td.get("output", {})
-                    )
+                    output  = td.get("data", {}).get("output", {}) or td.get("output", {})
                     img_url = (
-                        (output.get("image_urls") or [None])[0]   # ← Nano Banana retorna lista
+                        (output.get("image_urls") or [None])[0]
                         or output.get("image_url")
                         or output.get("url")
                         or (output.get("images") or [{}])[0].get("url")
@@ -232,38 +226,23 @@ def _generate_nano_banana_image(
 # ══════════════════════════════════════════════════════════════════════════════
 # DOWNLOAD IMAGEM + UPLOAD R2
 # ══════════════════════════════════════════════════════════════════════════════
-def _download_and_upload(
-    img_url: str,
-    scene_number: int,
-    job_id: str,
-    aspect_ratio: str,
-    resolution: str,
-    mode: str
-) -> dict:
+def _download_and_upload(img_url, scene_number, job_id, aspect_ratio, resolution, mode):
     try:
         r = requests.get(img_url, timeout=60)
         if r.status_code != 200:
             return _generate_placeholder_image(scene_number, "")
-
         filename   = f"scene_{scene_number:03d}.jpg"
         local_path = os.path.join(UPLOAD_DIR, filename)
         with open(local_path, "wb") as f:
             f.write(r.content)
-
         r2_key = f"jobs/{job_id}/{filename}" if job_id else f"scenes/{filename}"
         r2_url = upload_to_r2(local_path, r2_key)
-
         print(f"✅ Scene {scene_number} done")
         return {
-            "success":      True,
-            "scene_number": scene_number,
-            "image_path":   local_path,
-            "image_url":    r2_url or img_url,
-            "r2_url":       r2_url,
-            "prompt_used":  "",
-            "mode":         mode,
-            "aspect_ratio": aspect_ratio,
-            "resolution":   resolution,
+            "success": True, "scene_number": scene_number,
+            "image_path": local_path, "image_url": r2_url or img_url,
+            "r2_url": r2_url, "prompt_used": "", "mode": mode,
+            "aspect_ratio": aspect_ratio, "resolution": resolution,
         }
     except Exception as e:
         print(f"❌ Download/upload error scene {scene_number}: {e}")
@@ -279,15 +258,10 @@ def _generate_placeholder_image(scene_number: int, prompt: str) -> dict:
     local_path = os.path.join(UPLOAD_DIR, filename)
     img.save(local_path)
     return {
-        "success":      False,
-        "scene_number": scene_number,
-        "image_path":   local_path,
-        "image_url":    f"/api/files/{filename}",
-        "r2_url":       None,
-        "prompt_used":  prompt[:100],
-        "mode":         "placeholder",
-        "aspect_ratio": "16:9",
-        "resolution":   "720p",
+        "success": False, "scene_number": scene_number,
+        "image_path": local_path, "image_url": f"/api/files/{filename}",
+        "r2_url": None, "prompt_used": prompt[:100],
+        "mode": "placeholder", "aspect_ratio": "16:9", "resolution": "720p",
     }
 
 
@@ -302,17 +276,11 @@ def generate_scene_image(
     resolution: str = "720p",
     reference_image_path: str = None,
     reference_imgbb_url: str = None,
-    reference_imgbb_urls: Optional[list] = None,  # ✅ múltiplas referências
+    reference_imgbb_urls: Optional[list] = None,
     job_id: str = ""
 ) -> dict:
-    """
-    Gera uma imagem via Nano Banana Pro (PiAPI).
-    COM referência → inclui image_urls para manter rosto (até 3 fotos)
-    SEM referência → text-to-image puro
-    """
     print(f"\n🎨 Generating scene {scene_number} [{aspect_ratio}, {resolution}, {style}]")
 
-    # ── Obter URLs públicas das referências ────────────────────────────────────
     ref_urls = reference_imgbb_urls or []
     if not ref_urls and reference_imgbb_url:
         ref_urls = [reference_imgbb_url]
@@ -321,13 +289,10 @@ def generate_scene_image(
         if url: ref_urls = [url]
 
     nb_url = _generate_nano_banana_image(
-        prompt=prompt,
-        scene_number=scene_number,
-        style=style,
+        prompt=prompt, scene_number=scene_number, style=style,
         aspect_ratio=aspect_ratio,
         reference_image_urls=ref_urls if ref_urls else None,
     )
-
     if not nb_url:
         print(f"   ⚠️ Nano Banana falhou — usando placeholder")
         return _generate_placeholder_image(scene_number, prompt)
@@ -345,13 +310,14 @@ def generate_scenes_batch(
     aspect_ratio: str = "16:9",
     resolution: str = "720p",
     reference_image_path: str = None,
-    reference_image_paths: Optional[list] = None,  # ✅ até 3 fotos de referência
+    reference_image_paths: Optional[list] = None,
     job_id: str = ""
 ) -> list:
     """
     Gera imagens para múltiplas cenas via Nano Banana Pro (PiAPI).
-    Sobe as referências (fotos do rosto) para imgbb UMA VEZ e reutiliza em todas.
-    Suporta até 3 imagens de referência para melhor consistência facial.
+    ✅ Save progressivo a cada 5 cenas no Supabase
+    ✅ Checa cancelamento antes de cada chamada
+    ✅ Suporta até 3 imagens de referência
     """
     results          = []
     successful_count = 0
@@ -361,31 +327,37 @@ def generate_scenes_batch(
     print(f"   Aspect Ratio: {aspect_ratio}")
     print(f"   Resolution:   {resolution}")
 
-    # ── Montar lista de paths de referência ───────────────────────────────────
+    # Montar lista de paths de referência
     all_ref_paths = reference_image_paths or []
     if not all_ref_paths and reference_image_path:
         all_ref_paths = [reference_image_path]
     all_ref_paths = [p for p in all_ref_paths if p and os.path.exists(p)]
 
-    # ── Hospedar referências UMA vez para todas as cenas ──────────────────────
+    # Hospedar referências UMA vez para todas as cenas
     cached_ref_urls = []
     if all_ref_paths:
         print(f"   🎭 {len(all_ref_paths)} imagem(ns) de referência")
-        print(f"   Mode:         Nano Banana Pro — face reference")
-        for i, path in enumerate(all_ref_paths[:3]):  # max 3
-            print(f"   📤 Uploading ref {i+1}/{len(all_ref_paths[:3])}: {os.path.basename(path)}")
+        for i, path in enumerate(all_ref_paths[:3]):
+            print(f"   📤 Uploading ref {i+1}: {os.path.basename(path)}")
             url = _upload_reference_to_imgbb(path)
             if url:
                 cached_ref_urls.append(url)
                 print(f"   ✅ Ref {i+1} cached")
             else:
-                print(f"   ⚠️ Ref {i+1} falhou no upload")
+                print(f"   ⚠️ Ref {i+1} falhou")
         if not cached_ref_urls:
-            print(f"   ⚠️ Nenhuma referência disponível — usando text-to-image")
+            print(f"   ⚠️ Nenhuma referência — usando text-to-image")
     else:
-        print(f"   Mode:         Nano Banana Pro — text-to-image")
+        print(f"   Mode: Nano Banana Pro — text-to-image")
 
     for scene in scenes:
+        # ✅ Checa cancelamento antes de gastar créditos no Nano Banana
+        _job_state = jobs_cache.get(job_id, {}) if job_id else {}
+        if _job_state.get("cancelled"):
+            print(f"🛑 Geração cancelada — cena {scene['scene_number']}")
+            results.append(_generate_placeholder_image(scene["scene_number"], scene["prompt"]))
+            continue
+
         result = generate_scene_image(
             prompt=scene["prompt"],
             scene_number=scene["scene_number"],
@@ -401,7 +373,18 @@ def generate_scenes_batch(
             successful_count += 1
         results.append(result)
 
-        # Delay entre cenas para evitar rate limit
+        # ✅ Save progressivo a cada 5 cenas — sobrevive a crashes
+        if job_id and len(results) % 5 == 0:
+            try:
+                from services.job_store import save_job
+                _job = jobs_cache.get(job_id, {})
+                if _job:
+                    _job["scenes"] = results[:]
+                    save_job(job_id, _job)
+                    print(f"💾 Progresso salvo: {len(results)}/{len(scenes)} cenas — job {job_id[:8]}")
+            except Exception as _se:
+                print(f"⚠️ Save progressivo falhou: {_se}")
+
         if scene != scenes[-1]:
             time.sleep(3)
 
