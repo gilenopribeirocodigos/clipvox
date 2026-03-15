@@ -899,11 +899,40 @@ export default function Dashboard({ onBack }) {
   const [cancelled,      setCancelled]      = useState(false)
   const pollRef = useRef()
 
+  // ✅ Auto-recupera job ativo ao recarregar a página (como o FREEBEAT)
   useEffect(() => {
     const wake = async () => {
       try {
         const res = await fetch(`${API_URL}/api/health`)
-        if (res.ok) { setServerReady(true); return }
+        if (res.ok) {
+          setServerReady(true)
+          // Tenta retomar job salvo no localStorage
+          const savedId   = localStorage.getItem('clipvox_active_job')
+          const savedName = localStorage.getItem('clipvox_active_name')
+          if (savedId) {
+            try {
+              const r = await fetch(`${API_URL}/api/videos/status/${savedId}`)
+              if (r.ok) {
+                const data = await r.json()
+                // Só retoma se ainda estiver em processamento ativo
+                const activeStatuses = ['processing', 'pending']
+                const activeVideo    = ['processing', 'retrying']
+                const isActive = activeStatuses.includes(data.status)
+                  || activeVideo.includes(data.videos_status)
+                  || data.lipsync_status === 'processing'
+                  || data.merge_status === 'processing'
+                if (isActive || data.status === 'completed') {
+                  console.log('♻️ Retomando job salvo:', savedId)
+                  handleResume(savedId, data, savedName)
+                } else {
+                  localStorage.removeItem('clipvox_active_job')
+                  localStorage.removeItem('clipvox_active_name')
+                }
+              }
+            } catch(e) { console.warn('Auto-resume falhou:', e) }
+          }
+          return
+        }
       } catch(e) {}
       setTimeout(wake, 5000)
     }
@@ -927,11 +956,15 @@ export default function Dashboard({ onBack }) {
   }, [jobStatus])
 
   // ✅ Retomar job existente pelo ID
-  const handleResume = (id, data) => {
+  const handleResume = (id, data, savedName) => {
     setJobId(id)
     setJobStatus(data)
-    setFileName(data.file_name || `job-${id.slice(0,8)}`)
+    const name = savedName || data.file_name || data.audio_filename || `job-${id.slice(0,8)}`
+    setFileName(name)
     setPhase('processing')
+    // ✅ Persiste no localStorage para sobreviver a reloads
+    localStorage.setItem('clipvox_active_job', id)
+    localStorage.setItem('clipvox_active_name', name)
 
     // Inicia polling
     pollRef.current = setInterval(async () => {
@@ -983,6 +1016,9 @@ export default function Dashboard({ onBack }) {
       if (!data.job_id) { alert('Resposta inesperada. Tente novamente.'); setPhase('upload'); return }
 
       setJobId(data.job_id)
+      // ✅ Salva no localStorage para recuperar após reload
+      localStorage.setItem('clipvox_active_job', data.job_id)
+      localStorage.setItem('clipvox_active_name', file.name)
       pollRef.current = setInterval(async () => {
         try {
           const res    = await fetch(`${API_URL}/api/videos/status/${data.job_id}`)
@@ -1005,6 +1041,8 @@ export default function Dashboard({ onBack }) {
 
   const reset = () => {
     if (pollRef.current) clearInterval(pollRef.current)
+    localStorage.removeItem('clipvox_active_job')
+    localStorage.removeItem('clipvox_active_name')
     setPhase('upload'); setJobId(null); setJobStatus(null); setFileName('')
     setCompletedClips(null); setLipSyncDone(false); setLipSyncUrl(null); setCancelled(false)
   }
