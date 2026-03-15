@@ -108,11 +108,12 @@ def _generate_nano_banana_image(
     style: str = "realistic",
     aspect_ratio: str = "16:9",
     reference_image_url: Optional[str] = None,
+    reference_image_urls: Optional[list] = None,  # ✅ múltiplas referências
 ) -> Optional[str]:
     """
     Chama Nano Banana Pro via PiAPI.
 
-    COM referência → image_urls = [reference_image_url] (mantém rosto)
+    COM referência → image_urls = [url1, url2, ...] (mantém rosto)
     SEM referência → text-to-image puro
 
     Retorna URL da imagem gerada, ou None se falhar.
@@ -134,9 +135,11 @@ def _generate_nano_banana_image(
         "aspect_ratio": nb_aspect,
     }
 
-    if reference_image_url:
-        print(f"   🎭 Mode: Nano Banana Pro + face reference")
-        payload_input["image_urls"] = [reference_image_url]
+    # ✅ Suporte a múltiplas referências (até 3 fotos do artista)
+    all_ref_urls = reference_image_urls or ([reference_image_url] if reference_image_url else [])
+    if all_ref_urls:
+        print(f"   🎭 Mode: Nano Banana Pro + {len(all_ref_urls)} imagem(ns) de referência")
+        payload_input["image_urls"] = all_ref_urls
     else:
         print(f"   🎨 Mode: Nano Banana Pro text-to-image")
 
@@ -299,35 +302,37 @@ def generate_scene_image(
     resolution: str = "720p",
     reference_image_path: str = None,
     reference_imgbb_url: str = None,
+    reference_imgbb_urls: Optional[list] = None,  # ✅ múltiplas referências
     job_id: str = ""
 ) -> dict:
     """
     Gera uma imagem via Nano Banana Pro (PiAPI).
-    COM referência → inclui image_urls para manter rosto
+    COM referência → inclui image_urls para manter rosto (até 3 fotos)
     SEM referência → text-to-image puro
     """
     print(f"\n🎨 Generating scene {scene_number} [{aspect_ratio}, {resolution}, {style}]")
 
-    # ── Obter URL pública da referência ────────────────────────────────────────
-    ref_url = None
-    if reference_imgbb_url:
-        ref_url = reference_imgbb_url
-    elif reference_image_path and os.path.exists(reference_image_path):
-        ref_url = _upload_reference_to_imgbb(reference_image_path)
+    # ── Obter URLs públicas das referências ────────────────────────────────────
+    ref_urls = reference_imgbb_urls or []
+    if not ref_urls and reference_imgbb_url:
+        ref_urls = [reference_imgbb_url]
+    elif not ref_urls and reference_image_path and os.path.exists(reference_image_path):
+        url = _upload_reference_to_imgbb(reference_image_path)
+        if url: ref_urls = [url]
 
     nb_url = _generate_nano_banana_image(
         prompt=prompt,
         scene_number=scene_number,
         style=style,
         aspect_ratio=aspect_ratio,
-        reference_image_url=ref_url,
+        reference_image_urls=ref_urls if ref_urls else None,
     )
 
     if not nb_url:
         print(f"   ⚠️ Nano Banana falhou — usando placeholder")
         return _generate_placeholder_image(scene_number, prompt)
 
-    mode = "nano-banana-face-ref" if ref_url else "nano-banana-text2image"
+    mode = "nano-banana-face-ref" if ref_urls else "nano-banana-text2image"
     return _download_and_upload(nb_url, scene_number, job_id, aspect_ratio, resolution, mode)
 
 
@@ -340,11 +345,13 @@ def generate_scenes_batch(
     aspect_ratio: str = "16:9",
     resolution: str = "720p",
     reference_image_path: str = None,
+    reference_image_paths: Optional[list] = None,  # ✅ até 3 fotos de referência
     job_id: str = ""
 ) -> list:
     """
     Gera imagens para múltiplas cenas via Nano Banana Pro (PiAPI).
-    Sobe a referência (foto do rosto) para imgbb UMA VEZ e reutiliza em todas.
+    Sobe as referências (fotos do rosto) para imgbb UMA VEZ e reutiliza em todas.
+    Suporta até 3 imagens de referência para melhor consistência facial.
     """
     results          = []
     successful_count = 0
@@ -354,17 +361,27 @@ def generate_scenes_batch(
     print(f"   Aspect Ratio: {aspect_ratio}")
     print(f"   Resolution:   {resolution}")
 
-    # ── Hospedar referência UMA vez para todas as cenas ────────────────────────
-    cached_ref_url = None
-    if reference_image_path and os.path.exists(reference_image_path):
-        print(f"   🎭 Reference:  {os.path.basename(reference_image_path)}")
+    # ── Montar lista de paths de referência ───────────────────────────────────
+    all_ref_paths = reference_image_paths or []
+    if not all_ref_paths and reference_image_path:
+        all_ref_paths = [reference_image_path]
+    all_ref_paths = [p for p in all_ref_paths if p and os.path.exists(p)]
+
+    # ── Hospedar referências UMA vez para todas as cenas ──────────────────────
+    cached_ref_urls = []
+    if all_ref_paths:
+        print(f"   🎭 {len(all_ref_paths)} imagem(ns) de referência")
         print(f"   Mode:         Nano Banana Pro — face reference")
-        print(f"   📤 Uploading reference to imgbb...")
-        cached_ref_url = _upload_reference_to_imgbb(reference_image_path)
-        if cached_ref_url:
-            print(f"   🔗 Ref URL cached para todas as cenas")
-        else:
-            print(f"   ⚠️ Sem referência — usando text-to-image")
+        for i, path in enumerate(all_ref_paths[:3]):  # max 3
+            print(f"   📤 Uploading ref {i+1}/{len(all_ref_paths[:3])}: {os.path.basename(path)}")
+            url = _upload_reference_to_imgbb(path)
+            if url:
+                cached_ref_urls.append(url)
+                print(f"   ✅ Ref {i+1} cached")
+            else:
+                print(f"   ⚠️ Ref {i+1} falhou no upload")
+        if not cached_ref_urls:
+            print(f"   ⚠️ Nenhuma referência disponível — usando text-to-image")
     else:
         print(f"   Mode:         Nano Banana Pro — text-to-image")
 
@@ -375,8 +392,8 @@ def generate_scenes_batch(
             style=style,
             aspect_ratio=aspect_ratio,
             resolution=resolution,
-            reference_image_path=None,          # já processada acima
-            reference_imgbb_url=cached_ref_url, # URL pública reutilizada
+            reference_image_path=None,
+            reference_imgbb_urls=cached_ref_urls if cached_ref_urls else None,
             job_id=job_id
         )
 
