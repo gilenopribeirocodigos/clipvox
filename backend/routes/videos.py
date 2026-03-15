@@ -61,6 +61,8 @@ async def generate_video(
     aspect_ratio: str             = Form("16:9"),
     resolution:   str             = Form("720p"),
     ref_image:    Optional[UploadFile] = File(None),
+    ref_image_2:  Optional[UploadFile] = File(None),
+    ref_image_3:  Optional[UploadFile] = File(None),
     background_tasks: BackgroundTasks = None
 ):
     ALLOWED_AUDIO = ["audio/", "application/octet-stream", "video/mp4", "application/mp3", "application/mpeg"]
@@ -76,12 +78,17 @@ async def generate_video(
     with open(audio_path, "wb") as f:
         f.write(await audio.read())
 
-    ref_image_path = None
-    if ref_image:
-        ref_image_filename = f"{job_id}_ref_{ref_image.filename}"
-        ref_image_path     = os.path.join(UPLOAD_DIR, ref_image_filename)
-        with open(ref_image_path, "wb") as f:
-            f.write(await ref_image.read())
+    ref_image_path  = None
+    ref_image_paths = []
+    for i, ri in enumerate([ref_image, ref_image_2, ref_image_3], start=1):
+        if ri and ri.filename:
+            rp = os.path.join(UPLOAD_DIR, f"{job_id}_ref{i}_{ri.filename}")
+            with open(rp, "wb") as f:
+                f.write(await ri.read())
+            ref_image_paths.append(rp)
+            print(f"✅ Ref {i} salva: {ri.filename}")
+    if ref_image_paths:
+        ref_image_path = ref_image_paths[0]
 
     jobs_db[job_id] = {
         "id":             job_id,
@@ -95,7 +102,8 @@ async def generate_video(
         "duration":       duration,
         "aspect_ratio":   aspect_ratio,
         "resolution":     resolution,
-        "ref_image_path": ref_image_path,
+        "ref_image_path":  ref_image_path,
+        "ref_image_paths": ref_image_paths,
         "created_at":     time.time(),
         "video_clips":    None,
         "videos_status":  "pending",
@@ -431,11 +439,19 @@ def process_video_pipeline(job_id: str):
             style                = job["style"],
             aspect_ratio         = job["aspect_ratio"],
             resolution           = job["resolution"],
-            reference_image_path = job.get("ref_image_path"),
-            job_id               = job_id,
+            reference_image_path  = job.get("ref_image_path"),
+            reference_image_paths = job.get("ref_image_paths") or [],
+            job_id                = job_id,
         )
         job["scenes"]    = scenes_with_images
         scenes_generated = sum(1 for s in scenes_with_images if s.get("success", False))
+        # ✅ Salva todas as cenas no Supabase assim que terminam
+        jobs_db[job_id]["scenes"] = scenes_with_images
+        try:
+            save_job(job_id, jobs_db[job_id])
+            print(f"💾 {scenes_generated}/{len(scenes_with_images)} cenas salvas no Supabase")
+        except Exception as _e:
+            print(f"⚠️ Save cenas falhou: {_e}")
         update_job(job_id, progress=min(60 + int((scenes_generated / len(scenes_with_images)) * 20), 80))
         time.sleep(1)
         update_job(job_id, progress=85, current_step="segments")
