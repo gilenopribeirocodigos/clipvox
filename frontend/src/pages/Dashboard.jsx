@@ -106,6 +106,59 @@ function ResumeJobBox({ onResume }) {
   )
 }
 
+
+// ══════════════════════════════════════════════════════
+// 📋 HISTÓRICO DE JOBS
+// ══════════════════════════════════════════════════════
+function HistoryPanel({ onResume }) {
+  const [history, setHistory] = useState([])
+  const [open,    setOpen]    = useState(false)
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('clipvox_history') || '[]')
+      setHistory(saved)
+    } catch(e) {}
+  }, [open])
+
+  if (history.length === 0) return null
+
+  return (
+    <div style={{ maxWidth:780, margin:'0 auto', padding:'0 24px 32px' }}>
+      <div style={{ background:'rgba(16,16,24,.7)', border:'1px solid rgba(255,255,255,.07)', borderRadius:14, overflow:'hidden' }}>
+        <div onClick={() => setOpen(o => !o)}
+          style={{ padding:'14px 18px', display:'flex', alignItems:'center', justifyContent:'space-between', cursor:'pointer' }}
+          onMouseEnter={e => e.currentTarget.style.background='rgba(255,255,255,.03)'}
+          onMouseLeave={e => e.currentTarget.style.background='transparent'}>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <span style={{ fontSize:14 }}>🕓</span>
+            <span style={{ color:'#9ca3af', fontSize:12, fontWeight:600, letterSpacing:.5 }}>HISTÓRICO</span>
+            <span style={{ background:'rgba(249,115,22,.15)', color:'#f97316', fontSize:10, fontWeight:700, borderRadius:6, padding:'2px 7px' }}>{history.length}</span>
+          </div>
+          <span style={{ color:'#6b7280', fontSize:12 }}>{open ? '▲' : '▼'}</span>
+        </div>
+        {open && (
+          <div style={{ borderTop:'1px solid rgba(255,255,255,.06)' }}>
+            {history.map((item, i) => (
+              <div key={item.id} onClick={() => onResume(item.id, null, item.name)}
+                style={{ padding:'11px 18px', display:'flex', alignItems:'center', gap:12, cursor:'pointer', borderBottom: i < history.length-1 ? '1px solid rgba(255,255,255,.04)' : 'none' }}
+                onMouseEnter={e => e.currentTarget.style.background='rgba(249,115,22,.05)'}
+                onMouseLeave={e => e.currentTarget.style.background='transparent'}>
+                <span style={{ fontSize:16 }}>🎵</span>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ color:'#fff', fontSize:12, fontWeight:500, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.name}</div>
+                  <div style={{ color:'#4b5563', fontSize:10, marginTop:2 }}>{item.date} · {item.id.slice(0,8)}</div>
+                </div>
+                <span style={{ color:'#f97316', fontSize:11, whiteSpace:'nowrap' }}>▶ Retomar</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function UploadZone({ onStart }) {
   const [dragging, setDragging] = useState(false)
   const [file, setFile] = useState(null)
@@ -288,13 +341,119 @@ function LeftPanel({ fileName, jobStatus, onReset }) {
   )
 }
 
-function SceneImage({ scene, index }) {
+
+// ══════════════════════════════════════════════════════
+// 🎬 MODAL DE EDIÇÃO DE CENA / VÍDEO
+// ══════════════════════════════════════════════════════
+function SceneEditModal({ item, type, jobId, onClose, onRegenerated }) {
+  const [prompt,    setPrompt]    = useState(item?.prompt || item?.prompt_used || '')
+  const [loading,   setLoading]   = useState(false)
+  const [success,   setSuccess]   = useState(false)
+  const [playing,   setPlaying]   = useState(false)
+  const videoRef = useRef()
+
+  const handleRegen = async () => {
+    setLoading(true)
+    try {
+      const formData = new FormData()
+      formData.append('prompt', prompt)
+      const endpoint = type === 'scene'
+        ? `${API_URL}/api/videos/regen-scene/${jobId}/${item.scene_number}`
+        : `${API_URL}/api/videos/regen-video/${jobId}/${item.scene_number}`
+      const res = await fetch(endpoint, { method: 'POST', body: formData })
+      if (!res.ok) { const e = await res.json().catch(() => {}); throw new Error(e?.detail || `Erro ${res.status}`) }
+      setSuccess(true)
+      setTimeout(() => { onRegenerated(); onClose() }, 1500)
+    } catch(e) {
+      alert('Erro: ' + e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.85)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background:'#111118', border:'1px solid rgba(255,255,255,.1)', borderRadius:18, width:'100%', maxWidth:820, maxHeight:'90vh', overflow:'auto', padding:28, position:'relative', animation:'fadeUp .3s ease' }}>
+        <button onClick={onClose} style={{ position:'absolute', top:14, right:16, background:'rgba(255,255,255,.07)', border:'none', borderRadius:8, color:'#9ca3af', fontSize:16, cursor:'pointer', padding:'4px 10px' }}>✕</button>
+
+        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
+          <span style={{ fontSize:20 }}>{type === 'scene' ? '🖼️' : '🎬'}</span>
+          <div>
+            <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:16, letterSpacing:2, color:'#fff' }}>
+              {type === 'scene' ? 'EDITAR CENA' : 'EDITAR VÍDEO'} #{item.scene_number}
+            </div>
+            <div style={{ color:'#6b7280', fontSize:11 }}>Edite o prompt e regenere apenas esta cena</div>
+          </div>
+        </div>
+
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:20, marginBottom:20 }}>
+          {/* Preview */}
+          <div>
+            <div style={{ color:'#9ca3af', fontSize:11, fontWeight:600, letterSpacing:.5, marginBottom:8 }}>
+              {type === 'scene' ? '🖼️ IMAGEM ATUAL' : '🎬 VÍDEO ATUAL'}
+            </div>
+            <div style={{ borderRadius:12, overflow:'hidden', background:'#0a0a0e', position:'relative' }}>
+              {type === 'scene' ? (
+                <img src={item.image_url} alt={`Cena ${item.scene_number}`}
+                  style={{ width:'100%', display:'block', maxHeight:220, objectFit:'cover' }} />
+              ) : (
+                <div style={{ position:'relative', cursor:'pointer' }}
+                  onClick={() => { if(videoRef.current) { if(playing){ videoRef.current.pause(); setPlaying(false) } else { videoRef.current.play(); setPlaying(true) } } }}>
+                  <video ref={videoRef} src={item.video_url} loop playsInline
+                    style={{ width:'100%', display:'block', maxHeight:220, objectFit:'cover' }}
+                    onEnded={() => setPlaying(false)} />
+                  {!playing && (
+                    <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.4)' }}>
+                      <div style={{ width:40, height:40, borderRadius:'50%', background:'rgba(249,115,22,.9)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:14 }}>▶</div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Prompt */}
+          <div>
+            <div style={{ color:'#9ca3af', fontSize:11, fontWeight:600, letterSpacing:.5, marginBottom:8 }}>✏️ PROMPT</div>
+            <textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={9}
+              style={{ width:'100%', padding:'12px', borderRadius:12, background:'rgba(255,255,255,.05)', border:'1px solid rgba(255,255,255,.1)', color:'#fff', fontSize:12, lineHeight:1.6, resize:'vertical', outline:'none', fontFamily:"'DM Sans',sans-serif" }}
+              onFocus={e => e.target.style.borderColor='rgba(249,115,22,.4)'}
+              onBlur={e => e.target.style.borderColor='rgba(255,255,255,.1)'}
+            />
+            <div style={{ color:'#4b5563', fontSize:10, marginTop:4 }}>Edite o prompt acima para alterar o resultado</div>
+          </div>
+        </div>
+
+        {success ? (
+          <div style={{ textAlign:'center', padding:'12px', background:'rgba(34,197,94,.1)', borderRadius:10, color:'#22c55e', fontSize:13, fontWeight:600 }}>
+            ✅ Regeneração iniciada! A cena será atualizada em breve.
+          </div>
+        ) : (
+          <div style={{ display:'flex', gap:10 }}>
+            <button onClick={handleRegen} disabled={loading || !prompt.trim()}
+              style={{ flex:1, padding:'13px', background: prompt.trim() ? 'linear-gradient(135deg,#f97316,#ea580c)' : 'rgba(60,60,70,.5)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor: prompt.trim() ? 'pointer' : 'not-allowed', boxShadow: prompt.trim() ? '0 4px 18px rgba(249,115,22,.3)' : 'none', transition:'all .25s' }}>
+              {loading ? '⏳ Regenerando...' : `🔄 Regenerar ${type === 'scene' ? 'Imagem' : 'Vídeo'}`}
+            </button>
+            <button onClick={onClose}
+              style={{ padding:'13px 20px', background:'rgba(255,255,255,.06)', color:'#9ca3af', border:'1px solid rgba(255,255,255,.1)', borderRadius:12, fontSize:13, cursor:'pointer' }}>
+              Cancelar
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SceneImage({ scene, index, jobId, onEdit }) {
   const [loaded, setLoaded] = useState(false)
   const [error, setError]   = useState(false)
+  const isRegen = scene?.regenerating
   return (
-    <div style={{ background:'rgba(255,255,255,.03)', border:'1px solid rgba(255,255,255,.06)', borderRadius:11, overflow:'hidden', cursor:'pointer', transition:'all .25s', animation:`fadeUp .4s ease ${index*0.04}s both`, position:'relative' }}
+    <div onClick={() => onEdit && onEdit(scene)} style={{ background:'rgba(255,255,255,.03)', border:`1px solid ${isRegen ? 'rgba(249,115,22,.5)' : 'rgba(255,255,255,.06)'}`, borderRadius:11, overflow:'hidden', cursor:'pointer', transition:'all .25s', animation:`fadeUp .4s ease ${index*0.04}s both`, position:'relative' }}
       onMouseEnter={e => { e.currentTarget.style.borderColor='rgba(249,115,22,.3)'; e.currentTarget.style.transform='translateY(-2px)' }}
-      onMouseLeave={e => { e.currentTarget.style.borderColor='rgba(255,255,255,.06)'; e.currentTarget.style.transform='translateY(0)' }}>
+      onMouseLeave={e => { e.currentTarget.style.borderColor = isRegen ? 'rgba(249,115,22,.5)' : 'rgba(255,255,255,.06)'; e.currentTarget.style.transform='translateY(0)' }}>
       <div style={{ height:82, position:'relative', background:'#0a0a0e' }}>
         {!loaded && !error && <div className="skeleton" style={{ width:'100%', height:'100%', position:'absolute', top:0, left:0 }} />}
         {scene.image_url && !error ? (
@@ -303,6 +462,8 @@ function SceneImage({ scene, index }) {
           <div style={{ width:'100%', height:'100%', background:`linear-gradient(135deg, rgba(${80+index*10},${40+index*5},${20+index*8},1), rgba(10,10,14,1))`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:24 }}>🎬</div>
         )}
         <div style={{ position:'absolute', bottom:5, left:5, background:'rgba(0,0,0,.7)', borderRadius:4, padding:'2px 5px', fontSize:9, color:'#fff' }}>Scene {scene.scene_number}</div>
+        <div style={{ position:'absolute', top:4, right:4, background:'rgba(0,0,0,.6)', borderRadius:4, padding:'2px 6px', fontSize:9, color:'#f97316' }}>✏️</div>
+        {isRegen && <div style={{ position:'absolute', inset:0, background:'rgba(249,115,22,.15)', display:'flex', alignItems:'center', justifyContent:'center' }}><div style={{ width:24, height:24, border:'2px solid rgba(249,115,22,.3)', borderTop:'2px solid #f97316', borderRadius:'50%', animation:'spin .8s linear infinite' }} /></div>}
       </div>
       <div style={{ padding:'8px 9px' }}>
         <div style={{ fontSize:10, color:'#fff', fontWeight:500, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{scene.camera_movement}</div>
@@ -312,7 +473,7 @@ function SceneImage({ scene, index }) {
   )
 }
 
-function VideoClipCard({ clip, index }) {
+function VideoClipCard({ clip, index, onEdit }) {
   const [playing, setPlaying] = useState(false)
   const videoRef = useRef()
   const togglePlay = () => {
@@ -343,17 +504,18 @@ function VideoClipCard({ clip, index }) {
       </div>
       <div style={{ padding:'10px 12px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
         <div style={{ color:'#9ca3af', fontSize:10 }}>Kling AI · {clip.mode === 'pro' ? '⭐ Pro' : 'Standard'}</div>
-        <a href={clip.video_url} download={`cena_${clip.scene_number}.mp4`} target="_blank" rel="noreferrer"
-          style={{ color:'#f97316', fontSize:10, textDecoration:'none', display:'flex', alignItems:'center', gap:3 }}
-          onClick={e => e.stopPropagation()}>
-          ⬇ Baixar
-        </a>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          {onEdit && <button onClick={e => { e.stopPropagation(); onEdit(clip) }} style={{ background:'rgba(249,115,22,.1)', border:'1px solid rgba(249,115,22,.3)', borderRadius:6, padding:'3px 8px', color:'#f97316', fontSize:10, cursor:'pointer' }}>✏️ Editar</button>}
+          <a href={clip.video_url} download={`cena_${clip.scene_number}.mp4`} target="_blank" rel="noreferrer"
+            style={{ color:'#f97316', fontSize:10, textDecoration:'none' }}
+            onClick={e => e.stopPropagation()}>⬇ Baixar</a>
+        </div>
       </div>
     </div>
   )
 }
 
-function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted, onCancel }) {
+function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted, onCancel, onEditClip }) {
   const [videosStatus, setVideosStatus] = useState(null)
   const [videoClips,   setVideoClips]   = useState(null)
   const [klingMode,    setKlingMode]    = useState('std')
@@ -497,7 +659,7 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted, onCancel }) {
             </div>
           )}
           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(160px,1fr))', gap:12, marginTop:4 }}>
-            {videoClips.map((clip, i) => (<VideoClipCard key={clip.scene_number || i} clip={clip} index={i} />))}
+            {videoClips.map((clip, i) => (<VideoClipCard key={clip.scene_number || i} clip={clip} index={i} onEdit={onEditClip} />))}
           </div>
         </>
       )}
@@ -862,7 +1024,7 @@ function CreativeConceptCard({ concept }) {
   )
 }
 
-function ScenesGrid({ scenes }) {
+function ScenesGrid({ scenes, jobId, onEditScene }) {
   if (!scenes || scenes.length === 0) return null
   const [showAll, setShowAll] = useState(false)
   const displayScenes = showAll ? scenes : scenes.slice(0, 12)
@@ -880,7 +1042,7 @@ function ScenesGrid({ scenes }) {
         )}
       </div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(120px,1fr))', gap:10 }}>
-        {displayScenes.map((sc, i) => (<SceneImage key={sc.scene_number} scene={sc} index={i} />))}
+        {displayScenes.map((sc, i) => (<SceneImage key={sc.scene_number} scene={sc} index={i} jobId={jobId} onEdit={onEditScene} />))}
       </div>
     </div>
   )
@@ -897,6 +1059,7 @@ export default function Dashboard({ onBack }) {
   const [lipSyncDone,    setLipSyncDone]    = useState(false)
   const [lipSyncUrl,     setLipSyncUrl]     = useState(null)
   const [cancelled,      setCancelled]      = useState(false)
+  const [editModal,      setEditModal]      = useState(null)  // {item, type}
   const pollRef = useRef()
 
   // ✅ Auto-recupera job ativo ao recarregar a página (como o FREEBEAT)
@@ -965,6 +1128,14 @@ export default function Dashboard({ onBack }) {
     // ✅ Persiste no localStorage para sobreviver a reloads
     localStorage.setItem('clipvox_active_job', id)
     localStorage.setItem('clipvox_active_name', name)
+    // Salva no histórico ao retomar
+    try {
+      const hist = JSON.parse(localStorage.getItem('clipvox_history') || '[]')
+      if (!hist.find(h => h.id === id)) {
+        const entry = { id, name, date: new Date().toLocaleDateString('pt-BR') }
+        localStorage.setItem('clipvox_history', JSON.stringify([entry, ...hist].slice(0,20)))
+      }
+    } catch(e) {}
 
     // Inicia polling
     pollRef.current = setInterval(async () => {
@@ -1019,6 +1190,13 @@ export default function Dashboard({ onBack }) {
       // ✅ Salva no localStorage para recuperar após reload
       localStorage.setItem('clipvox_active_job', data.job_id)
       localStorage.setItem('clipvox_active_name', file.name)
+      // ✅ Salva no histórico
+      try {
+        const hist = JSON.parse(localStorage.getItem('clipvox_history') || '[]')
+        const entry = { id: data.job_id, name: file.name, date: new Date().toLocaleDateString('pt-BR') }
+        const updated = [entry, ...hist.filter(h => h.id !== data.job_id)].slice(0, 20)
+        localStorage.setItem('clipvox_history', JSON.stringify(updated))
+      } catch(e) {}
       pollRef.current = setInterval(async () => {
         try {
           const res    = await fetch(`${API_URL}/api/videos/status/${data.job_id}`)
@@ -1060,6 +1238,15 @@ export default function Dashboard({ onBack }) {
     if (clips && clips.some(c => c.success)) setCompletedClips(clips)
   }
 
+  const handleRegenerated = async () => {
+    // Recarrega status após regeneração de cena/vídeo
+    if (!jobId) return
+    try {
+      const res = await fetch(`${API_URL}/api/videos/status/${jobId}`)
+      if (res.ok) setJobStatus(await res.json())
+    } catch(e) {}
+  }
+
   const handleLipSyncCompleted = (url) => {
     setLipSyncDone(true)
     setLipSyncUrl(url || null)
@@ -1080,6 +1267,7 @@ export default function Dashboard({ onBack }) {
           </div>
         )}
         <UploadZone onStart={startGeneration} />
+        <HistoryPanel onResume={handleResume} />
         <ResumeJobBox onResume={handleResume} />
       </div>
     )
@@ -1115,7 +1303,7 @@ export default function Dashboard({ onBack }) {
           )}
 
           {jobStatus?.creative_concept && <CreativeConceptCard concept={jobStatus.creative_concept} />}
-          {jobStatus?.scenes && <div style={{ marginTop:16 }}><ScenesGrid scenes={jobStatus.scenes} /></div>}
+          {jobStatus?.scenes && <div style={{ marginTop:16 }}><ScenesGrid scenes={jobStatus.scenes} jobId={jobId} onEditScene={sc => setEditModal({ item: sc, type: 'scene' })} /></div>}
 
           {jobStatus?.status === 'completed' && jobId && (
             <>
@@ -1124,6 +1312,7 @@ export default function Dashboard({ onBack }) {
                 jobStatus={jobStatus}
                 onVideosCompleted={handleVideosCompleted}
                 onCancel={handleCancel}
+                onEditClip={clip => setEditModal({ item: clip, type: 'video' })}
               />
 
               {/* PASSO 2: Lip Sync — aparece quando clipes prontos OU quando estava rodando (stuck) */}
@@ -1158,6 +1347,17 @@ export default function Dashboard({ onBack }) {
           )}
         </div>
       </div>
+
+      {/* ✅ Modal de edição de cena/vídeo */}
+      {editModal && (
+        <SceneEditModal
+          item={editModal.item}
+          type={editModal.type}
+          jobId={jobId}
+          onClose={() => setEditModal(null)}
+          onRegenerated={handleRegenerated}
+        />
+      )}
     </div>
   )
 }
