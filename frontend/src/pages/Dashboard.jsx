@@ -353,7 +353,7 @@ function VideoClipCard({ clip, index }) {
   )
 }
 
-function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
+function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted, onCancel }) {
   const [videosStatus, setVideosStatus] = useState(null)
   const [videoClips,   setVideoClips]   = useState(null)
   const [klingMode,    setKlingMode]    = useState('std')
@@ -372,7 +372,7 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
   }, [jobStatus])
 
   useEffect(() => {
-    if (videosStatus === 'processing') {
+    if (videosStatus === 'processing' || videosStatus === 'retrying') {
       pollRef.current = setInterval(async () => {
         try {
           const res    = await fetch(`${API_URL}/api/videos/status/${jobId}`)
@@ -411,6 +411,19 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
   const totalClips    = validScenes.length
   const estimatedCost = (totalClips * (klingMode === 'std' ? 0.14 : 0.28)).toFixed(2)
   const successClips  = videoClips?.filter(c => c.success) || []
+  const failedClips   = videoClips?.filter(c => !c.success || !c.video_url) || []
+
+  const handleRetry = async () => {
+    if (generating) return
+    setGenerating(true); setError(null); setVideosStatus('retrying')
+    try {
+      const res = await fetch(`${API_URL}/api/videos/retry-clips/${jobId}?mode=${klingMode}`, { method:'POST' })
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `Erro ${res.status}`) }
+    } catch(err) {
+      setError(err.message || 'Erro ao tentar regenerar')
+      setGenerating(false); setVideosStatus('completed')
+    }
+  }
 
   return (
     <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:24, marginTop:16, animation:'fadeUp .5s ease' }}>
@@ -465,12 +478,36 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
           <div style={{ color:'#fff', fontSize:14, fontWeight:600, marginBottom:6 }}>Gerando clipes com Kling AI...</div>
           <div style={{ color:'#6b7280', fontSize:12 }}>Cada clipe leva ~1-3 minutos • Aguarde</div>
           <div style={{ marginTop:12, color:'#f97316', fontSize:11, animation:'pulse 1.5s ease infinite' }}>⏳ Processando {totalClips} cenas</div>
+          {onCancel && <button onClick={onCancel} style={{ marginTop:16, background:'rgba(239,68,68,.1)', border:'1px solid rgba(239,68,68,.3)', borderRadius:10, padding:'8px 20px', color:'#ef4444', fontSize:12, cursor:'pointer' }}>🛑 Cancelar</button>}
         </div>
       )}
 
       {videosStatus === 'completed' && videoClips && (
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(160px,1fr))', gap:12, marginTop:4 }}>
-          {videoClips.map((clip, i) => (<VideoClipCard key={clip.scene_number || i} clip={clip} index={i} />))}
+        <>
+          {failedClips.length > 0 && (
+            <div style={{ background:'rgba(234,179,8,.06)', border:'1px solid rgba(234,179,8,.2)', borderRadius:10, padding:'12px 16px', marginBottom:14, display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8 }}>
+              <div>
+                <div style={{ color:'#eab308', fontSize:12, fontWeight:600, marginBottom:2 }}>⚠️ {failedClips.length} cena(s) falharam</div>
+                <div style={{ color:'#6b7280', fontSize:11 }}>Cenas: {failedClips.map(c => c.scene_number).join(', ')} · Custo: ~${(failedClips.length * (klingMode === 'std' ? 0.14 : 0.28)).toFixed(2)}</div>
+              </div>
+              <button onClick={handleRetry}
+                style={{ padding:'8px 18px', background:'linear-gradient(135deg,#f97316,#ea580c)', color:'#fff', border:'none', borderRadius:10, fontSize:12, fontWeight:600, cursor:'pointer' }}>
+                🔄 Regenerar {failedClips.length} cena(s)
+              </button>
+            </div>
+          )}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(160px,1fr))', gap:12, marginTop:4 }}>
+            {videoClips.map((clip, i) => (<VideoClipCard key={clip.scene_number || i} clip={clip} index={i} />))}
+          </div>
+        </>
+      )}
+
+      {videosStatus === 'retrying' && (
+        <div style={{ textAlign:'center', padding:'24px 0' }}>
+          <div style={{ width:44, height:44, margin:'0 auto 16px', border:'3px solid rgba(234,179,8,.2)', borderTop:'3px solid #eab308', borderRadius:'50%', animation:'spin .9s linear infinite' }} />
+          <div style={{ color:'#fff', fontSize:14, fontWeight:600, marginBottom:6 }}>Regenerando cenas com falha...</div>
+          <div style={{ color:'#6b7280', fontSize:12 }}>Apenas as cenas que falharam • Créditos já gastos são mantidos</div>
+          {onCancel && <button onClick={onCancel} style={{ marginTop:14, background:'rgba(239,68,68,.1)', border:'1px solid rgba(239,68,68,.3)', borderRadius:10, padding:'8px 20px', color:'#ef4444', fontSize:12, cursor:'pointer' }}>🛑 Cancelar</button>}
         </div>
       )}
 
@@ -491,7 +528,7 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 🎤 LIP SYNC PANEL
 // ══════════════════════════════════════════════════════════════════════════════
-function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncStatus }) {
+function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncStatus, onCancel }) {
   // ✅ Se chegar com 'processing' do Supabase, consideramos travado (servidor reiniciou)
   const isStuck = initialLipSyncStatus === 'processing'
   const [status,    setStatus]    = useState(isStuck ? 'stuck' : null)
@@ -651,6 +688,7 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncSta
           <div style={{ color:'#fff', fontSize:14, fontWeight:600, marginBottom:6 }}>Aplicando Lip Sync...</div>
           <div style={{ color:'#6b7280', fontSize:12, marginBottom:8 }}>StemSplit extraindo vocals → Kling sincronizando lábios</div>
           <div style={{ color:'#a78bfa', fontSize:11, animation:'pulse 1.5s ease infinite' }}>⏳ Aguarde ~5-6 minutos</div>
+          {onCancel && <button onClick={onCancel} style={{ marginTop:16, background:'rgba(239,68,68,.1)', border:'1px solid rgba(239,68,68,.3)', borderRadius:10, padding:'8px 20px', color:'#ef4444', fontSize:12, cursor:'pointer' }}>🛑 Cancelar Lip Sync</button>}
         </div>
       )}
 
@@ -858,6 +896,7 @@ export default function Dashboard({ onBack }) {
   const [completedClips, setCompletedClips] = useState(null)
   const [lipSyncDone,    setLipSyncDone]    = useState(false)
   const [lipSyncUrl,     setLipSyncUrl]     = useState(null)
+  const [cancelled,      setCancelled]      = useState(false)
   const pollRef = useRef()
 
   useEffect(() => {
@@ -967,7 +1006,16 @@ export default function Dashboard({ onBack }) {
   const reset = () => {
     if (pollRef.current) clearInterval(pollRef.current)
     setPhase('upload'); setJobId(null); setJobStatus(null); setFileName('')
-    setCompletedClips(null); setLipSyncDone(false); setLipSyncUrl(null)
+    setCompletedClips(null); setLipSyncDone(false); setLipSyncUrl(null); setCancelled(false)
+  }
+
+  const handleCancel = async () => {
+    if (!jobId || cancelled) return
+    try {
+      await fetch(`${API_URL}/api/videos/cancel/${jobId}`, { method: 'POST' })
+      setCancelled(true)
+      if (pollRef.current) clearInterval(pollRef.current)
+    } catch(e) { console.warn('Cancel error:', e) }
   }
 
   const handleVideosCompleted = (clips) => {
@@ -1016,8 +1064,15 @@ export default function Dashboard({ onBack }) {
 
           {!jobStatus && (
             <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:'56px 24px', textAlign:'center' }}>
-              <div style={{ width:38, height:38, margin:'0 auto 14px', border:'3px solid rgba(255,255,255,.1)', borderTop:'3px solid #f97316', borderRadius:'50%', animation:'spin .8s linear infinite' }} />
-              <p style={{ color:'#6b7280', fontSize:14 }}>Processando sua música com IA...</p>
+              {!cancelled ? (
+                <>
+                  <div style={{ width:38, height:38, margin:'0 auto 14px', border:'3px solid rgba(255,255,255,.1)', borderTop:'3px solid #f97316', borderRadius:'50%', animation:'spin .8s linear infinite' }} />
+                  <p style={{ color:'#6b7280', fontSize:14, marginBottom:16 }}>Processando sua música com IA...</p>
+                  <button onClick={handleCancel} style={{ background:'rgba(239,68,68,.1)', border:'1px solid rgba(239,68,68,.3)', borderRadius:10, padding:'8px 20px', color:'#ef4444', fontSize:12, cursor:'pointer' }}>🛑 Cancelar geração</button>
+                </>
+              ) : (
+                <><div style={{ fontSize:32, marginBottom:10 }}>🛑</div><p style={{ color:'#ef4444', fontSize:14, marginBottom:12 }}>Geração cancelada</p><button onClick={reset} style={{ background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'8px 20px', color:'#fff', fontSize:13, cursor:'pointer' }}>🔄 Novo Videoclipe</button></>
+              )}
             </div>
           )}
 
@@ -1030,6 +1085,7 @@ export default function Dashboard({ onBack }) {
                 jobId={jobId}
                 jobStatus={jobStatus}
                 onVideosCompleted={handleVideosCompleted}
+                onCancel={handleCancel}
               />
 
               {/* PASSO 2: Lip Sync — aparece quando clipes prontos OU quando estava rodando (stuck) */}
@@ -1039,6 +1095,7 @@ export default function Dashboard({ onBack }) {
                   videoClips={completedClips}
                   onLipSyncCompleted={handleLipSyncCompleted}
                   initialLipSyncStatus={jobStatus?.lipsync_status}
+                  onCancel={handleCancel}
                 />
               )}
 
