@@ -115,10 +115,10 @@ function UploadZone({ onStart }) {
   const [customDur, setCustomDur] = useState(30)
   const [aspectRatio, setAspectRatio] = useState('16:9')
   const [resolution, setResolution] = useState('720p')
-  const [refImage, setRefImage] = useState(null)
-  const [refPreview, setRefPreview] = useState(null)
+  const [refImages, setRefImages] = useState([])    // até 3 fotos
+  const [refPreviews, setRefPreviews] = useState([])
   const fileRef = useRef()
-  const imageRef = useRef()
+  const imageRefs = [useRef(), useRef(), useRef()]
 
   const styles = [
     { id:'realistic', label:'Fotorrealista', emoji:'📷' },
@@ -155,13 +155,19 @@ function UploadZone({ onStart }) {
     if (f && (/^audio\//.test(f.type) || f.type === 'application/octet-stream' || /\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(f.name))) setFile(f)
   }
 
-  const acceptImage = f => {
+  const acceptImage = (f, idx) => {
     if (f && /^image\//.test(f.type)) {
-      setRefImage(f)
       const reader = new FileReader()
-      reader.onload = e => setRefPreview(e.target.result)
+      reader.onload = e => {
+        setRefImages(prev => { const a=[...prev]; a[idx]=f; return a })
+        setRefPreviews(prev => { const a=[...prev]; a[idx]=e.target.result; return a })
+      }
       reader.readAsDataURL(f)
     }
+  }
+  const removeImage = idx => {
+    setRefImages(prev => prev.filter((_,i)=>i!==idx))
+    setRefPreviews(prev => prev.filter((_,i)=>i!==idx))
   }
 
   return (
@@ -200,11 +206,24 @@ function UploadZone({ onStart }) {
         {styles.map(s => (<div key={s.id} onClick={() => setStyle(s.id)} style={{ padding:'11px 8px', borderRadius:12, cursor:'pointer', textAlign:'center', background: style===s.id ? 'rgba(249,115,22,.1)' : 'rgba(16,16,24,.6)', border: style===s.id ? '1px solid rgba(249,115,22,.4)' : '1px solid rgba(255,255,255,.07)', transition:'all .25s' }}><div style={{ fontSize:22, marginBottom:3 }}>{s.emoji}</div><div style={{ color: style===s.id ? '#f97316' : '#9ca3af', fontSize:11, fontWeight:500 }}>{s.label}</div></div>))}
       </div>
 
-      <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>👤 IMAGEM DE REFERÊNCIA (Opcional)</label>
-      <div onClick={() => imageRef.current.click()} style={{ border: refImage ? '2px dashed rgba(249,115,22,.5)' : '2px dashed rgba(255,255,255,.12)', borderRadius:12, padding:refImage ? '12px' : '24px', textAlign:'center', cursor:'pointer', background:'rgba(16,16,24,.6)', transition:'all .3s', marginBottom:22 }}>
-        <input ref={imageRef} type="file" accept="image/*" style={{ display:'none' }} onChange={e => acceptImage(e.target.files[0])} />
-        {refImage ? (<div style={{ display:'flex', alignItems:'center', gap:12 }}><img src={refPreview} style={{ width:60, height:60, borderRadius:8, objectFit:'cover' }} alt="ref" /><div style={{ flex:1, textAlign:'left' }}><div style={{ color:'#fff', fontSize:13, fontWeight:600 }}>{refImage.name}</div><div style={{ color:'#6b7280', fontSize:11, marginTop:2 }}>A IA usará esta imagem como referência</div></div><button onClick={e => { e.stopPropagation(); setRefImage(null); setRefPreview(null) }} style={{ background:'rgba(255,255,255,.05)', border:'1px solid rgba(255,255,255,.1)', borderRadius:6, padding:'6px 10px', color:'#6b7280', fontSize:11, cursor:'pointer' }}>✕</button></div>) : (<><div style={{ fontSize:28, marginBottom:6 }}>🖼️</div><div style={{ color:'#fff', fontSize:13, fontWeight:600, marginBottom:4 }}>Adicionar personagem/rosto de referência</div><div style={{ color:'#6b7280', fontSize:11 }}>A IA gerará cenas usando esta pessoa/personagem</div></>)}
+      <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>👤 IMAGENS DE REFERÊNCIA — até 3 (Opcional)</label>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, marginBottom:22 }}>
+        {[0,1,2].map(idx => (
+          <div key={idx} onClick={() => refImages.length > idx || refImages.length === idx ? imageRefs[idx].current.click() : null}
+            style={{ border: refPreviews[idx] ? '2px dashed rgba(249,115,22,.5)' : '2px dashed rgba(255,255,255,.1)', borderRadius:12, padding:'12px', textAlign:'center', cursor:'pointer', background:'rgba(16,16,24,.6)', minHeight:90, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', position:'relative', opacity: idx > refImages.length ? 0.4 : 1 }}>
+            <input ref={imageRefs[idx]} type='file' accept='image/*' style={{ display:'none' }} onChange={e => acceptImage(e.target.files[0], idx)} />
+            {refPreviews[idx] ? (
+              <><img src={refPreviews[idx]} style={{ width:52, height:52, borderRadius:8, objectFit:'cover', marginBottom:4 }} alt={`ref${idx+1}`} />
+              <div style={{ color:'#fff', fontSize:10, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', width:'100%', textAlign:'center' }}>{refImages[idx]?.name}</div>
+              <button onClick={e => { e.stopPropagation(); removeImage(idx) }} style={{ position:'absolute', top:4, right:4, background:'rgba(0,0,0,.6)', border:'none', borderRadius:4, color:'#9ca3af', fontSize:10, cursor:'pointer', padding:'2px 5px' }}>✕</button></>
+            ) : (
+              <><div style={{ fontSize:22, marginBottom:4 }}>{idx === 0 ? '🖼️' : '+'}</div>
+              <div style={{ color: idx === 0 ? '#fff' : '#6b7280', fontSize:10, fontWeight:500 }}>{idx === 0 ? 'Foto principal' : `Foto ${idx+1}`}</div></>
+            )}
+          </div>
+        ))}
       </div>
+      {refImages.length > 0 && <div style={{ color:'#6b7280', fontSize:10, marginTop:-16, marginBottom:14 }}>💡 Múltiplas fotos melhoram a consistência do rosto em todas as cenas</div>}
 
       <label style={{ display:'block', color:'#9ca3af', fontSize:12, fontWeight:500, letterSpacing:.5, marginBottom:8 }}>📝 DESCRIÇÃO DO VIDEOCLIPE</label>
       <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={3}
@@ -214,7 +233,7 @@ function UploadZone({ onStart }) {
         onBlur={e => e.target.style.borderColor='rgba(255,255,255,.1)'}
       />
 
-      <button onClick={() => file && onStart({ file, desc, style, duration: duration==='custom' ? customDur : duration, aspectRatio, resolution, refImage })}
+      <button onClick={() => file && onStart({ file, desc, style, duration: duration==='custom' ? customDur : duration, aspectRatio, resolution, refImages })}
         style={{ width:'100%', padding:'15px', background: file ? 'linear-gradient(135deg,#f97316,#ea580c)' : 'rgba(60,60,70,.5)', color:'#fff', border:'none', borderRadius:14, fontSize:15, fontWeight:600, cursor: file ? 'pointer' : 'not-allowed', boxShadow: file ? '0 4px 20px rgba(249,115,22,.35)' : 'none', transition:'all .25s' }}>
         {file ? '🎬 Gerar Videoclipe com IA' : 'Selecione um arquivo primeiro'}
       </button>
@@ -889,7 +908,7 @@ export default function Dashboard({ onBack }) {
     }, 3000)
   }
 
-  const startGeneration = async ({ file, desc, style, duration, aspectRatio, resolution, refImage }) => {
+  const startGeneration = async ({ file, desc, style, duration, aspectRatio, resolution, refImages }) => {
     try {
       setFileName(file.name); setPhase('processing'); setCredits(c => c - 100)
       setCompletedClips(null); setLipSyncDone(false); setLipSyncUrl(null)
@@ -900,7 +919,9 @@ export default function Dashboard({ onBack }) {
       formData.append('duration', String(duration))
       formData.append('aspect_ratio', aspectRatio)
       formData.append('resolution', resolution)
-      if (refImage) formData.append('ref_image', refImage)
+      ;(refImages || []).slice(0,3).forEach((img, i) => {
+        if (img) formData.append(i === 0 ? 'ref_image' : `ref_image_${i+1}`, img)
+      })
 
       const controller = new AbortController()
       const tid = setTimeout(() => controller.abort(), 90000)
