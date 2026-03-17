@@ -832,7 +832,10 @@ def process_merge(job_id: str):
 
 
 def _preextract_vocals(job_id: str):
-    """Extrai vocals com StemSplit.io — reutilizado em todos os clips de lip sync."""
+    """Extrai vocals com StemSplit.io — reutilizado em todos os clips de lip sync.
+    ✅ Trime o áudio para a duração selecionada antes de enviar ao StemSplit
+    para economizar créditos (cobra por segundo de áudio processado).
+    """
     try:
         job        = jobs_db.get(job_id, {})
         # ✅ Checa cancelamento antes de gastar créditos no StemSplit
@@ -842,6 +845,30 @@ def _preextract_vocals(job_id: str):
         audio_path = job.get("audio_path")
         if not audio_path or not os.path.exists(audio_path):
             return
+
+        # ✅ Trime áudio para duração selecionada — evita pagar pelo arquivo inteiro
+        duration_str = job.get("duration", "full")
+        if duration_str and duration_str != "full":
+            try:
+                duration_sec = int(duration_str)
+                trimmed_path = audio_path.rsplit(".", 1)[0] + f"_trim{duration_sec}s.mp3"
+                import subprocess
+                result = subprocess.run([
+                    "ffmpeg", "-y", "-i", audio_path,
+                    "-t", str(duration_sec),
+                    "-acodec", "libmp3lame", "-ab", "192k",
+                    trimmed_path
+                ], capture_output=True, text=True, timeout=60)
+                if result.returncode == 0 and os.path.exists(trimmed_path):
+                    size_orig = os.path.getsize(audio_path) // 1024
+                    size_trim = os.path.getsize(trimmed_path) // 1024
+                    print(f"✂️ Áudio trimado para StemSplit: {size_orig}KB → {size_trim}KB ({duration_sec}s)")
+                    audio_path = trimmed_path
+                else:
+                    print(f"⚠️ Trim falhou — usando áudio completo: {result.stderr[-100:]}")
+            except Exception as te:
+                print(f"⚠️ Erro ao trimar áudio para StemSplit: {te}")
+
         from services.stemsplit_vocals import extract_vocals
         vocals_path = extract_vocals(audio_path, job_id)
         if vocals_path:
