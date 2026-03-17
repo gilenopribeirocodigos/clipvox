@@ -128,13 +128,17 @@ def _trim_audio(audio_path: str, duration: float, job_id: str = "") -> str:
         trimmed_path = os.path.join(UPLOAD_DIR, f"{job_id}_trimmed.{ext}")
 
         print(f"   ✂️ Trimando áudio: {audio_duration:.1f}s → {duration:.1f}s (duração do clipe)")
-        result = subprocess.run([
-            "ffmpeg", "-y",
-            "-i", audio_path,
-            "-t", str(duration),
-            "-c", "copy",
-            trimmed_path
-        ], capture_output=True, text=True, timeout=60)
+        # ✅ Se input WAV e output MP3, precisa reencodar (não pode -c copy)
+        input_ext  = audio_path.rsplit(".", 1)[-1].lower()
+        output_ext = trimmed_path.rsplit(".", 1)[-1].lower()
+        if input_ext != output_ext or input_ext == "wav":
+            codec_args = ["-acodec", "libmp3lame", "-ab", "128k"]
+        else:
+            codec_args = ["-c", "copy"]
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", audio_path, "-t", str(duration)] + codec_args + [trimmed_path],
+            capture_output=True, text=True, timeout=60
+        )
 
         if result.returncode == 0 and os.path.exists(trimmed_path):
             trimmed_size = os.path.getsize(trimmed_path) // 1024
