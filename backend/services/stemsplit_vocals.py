@@ -20,6 +20,37 @@ STEMSPLIT_API_KEY  = os.getenv("STEMSPLIT_API_KEY", "")
 STEMSPLIT_API_BASE = "https://stemsplit.io/api/v1"
 
 
+def _ensure_mp3(audio_path: str, job_id: str) -> str:
+    """
+    Converte WAV → MP3 antes de enviar ao StemSplit.
+    WAV pode ter cabeçalho corrompido com duração errada,
+    fazendo o StemSplit cobrar mais do que o áudio real.
+    MP3 sempre tem duração correta.
+    """
+    ext = audio_path.rsplit(".", 1)[-1].lower()
+    if ext == "mp3":
+        return audio_path  # já é MP3, sem conversão
+    
+    import subprocess
+    mp3_path = audio_path.rsplit(".", 1)[0] + f"_{job_id[:8]}_stemsplit.mp3"
+    print(f"   🔄 Convertendo {ext.upper()} → MP3 para StemSplit (evita cobrança incorreta)...")
+    result = subprocess.run([
+        "ffmpeg", "-y", "-i", audio_path,
+        "-acodec", "libmp3lame", "-ab", "192k",
+        "-ar", "44100",  # normaliza sample rate
+        mp3_path
+    ], capture_output=True, text=True, timeout=120)
+    
+    if result.returncode == 0 and os.path.exists(mp3_path):
+        orig_kb = os.path.getsize(audio_path) // 1024
+        mp3_kb  = os.path.getsize(mp3_path) // 1024
+        print(f"   ✅ Convertido: {orig_kb}KB {ext.upper()} → {mp3_kb}KB MP3")
+        return mp3_path
+    else:
+        print(f"   ⚠️ Conversão falhou — usando original: {result.stderr[-100:]}")
+        return audio_path
+
+
 def extract_vocals(audio_path: str, job_id: str = "") -> Optional[str]:
     """
     Envia o áudio para o StemSplit.io e retorna o caminho local do MP3 só com vocals.
@@ -30,6 +61,9 @@ def extract_vocals(audio_path: str, job_id: str = "") -> Optional[str]:
         return None
 
     print(f"🎵 StemSplit.io — extraindo vocals de: {os.path.basename(audio_path)}")
+
+    # ✅ Converte para MP3 antes de enviar — evita cobrança incorreta por WAV com header errado
+    audio_path = _ensure_mp3(audio_path, job_id)
 
     # 1. Obtém URL de upload
     upload_key, presigned_url = _get_upload_url(audio_path)
@@ -154,7 +188,7 @@ def _create_job(upload_key: str) -> Optional[str]:
         )
         print(f"   📥 Job HTTP {resp.status_code}: {resp.text[:200]}")
 
-        if resp.status_code not in (200, 201):
+        if resp.status_code != 200:
             print(f"   ❌ Falha ao criar job: {resp.text[:200]}")
             return None
 
