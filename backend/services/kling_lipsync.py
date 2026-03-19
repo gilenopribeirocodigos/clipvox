@@ -317,21 +317,35 @@ def _check_url_accessible(url: str, label: str) -> bool:
 # PIAPI LIP SYNC — criar task
 # ═══════════════════════════════════════════════════════════════
 def create_lipsync_task(video_url: str, audio_url: str,
-                        model: str = "kling") -> Optional[str]:
+                        model: str = "kling",
+                        origin_task_id: str = "") -> Optional[str]:
     print(f"🎤 Criando task de Lip Sync via PiAPI...")
     print(f"   Vídeo      : {video_url[:80]}")
     print(f"   Áudio      : {audio_url[:80]}")
 
-    payload = {
-        "model":     model,
-        "task_type": "lip_sync",
-        "input": {
+    # ✅ origin_task_id = solução definitiva para Pro mode
+    # O Kling usa o vídeo internamente — sem download externo, sem proxy error
+    if origin_task_id:
+        print(f"   🎯 Usando origin_task_id (sem download externo): {origin_task_id}")
+        lipsync_input = {
+            "origin_task_id":    origin_task_id,
+            "local_dubbing_url": audio_url,
+            "tts_text":          "",
+            "tts_timbre":        "",
+            "tts_speed":         1,
+        }
+    else:
+        lipsync_input = {
             "video_url":         video_url,
             "local_dubbing_url": audio_url,
             "tts_text":          "",
             "tts_timbre":        "",
             "tts_speed":         1,
         }
+    payload = {
+        "model":     model,
+        "task_type": "lip_sync",
+        "input":     lipsync_input,
     }
 
     try:
@@ -444,10 +458,11 @@ def generate_lipsync(
     audio_source:         str,
     job_id:               str            = "",
     model:                str            = "kling",
-    max_retries:          int            = 2,
+    max_retries:          int            = 3,
     extract_vocals_first: bool           = True,
     clip_duration:        Optional[float] = None,
-    preextracted_vocals:  Optional[str]  = None,   # ✅ vocals já extraídos antecipadamente
+    preextracted_vocals:  Optional[str]  = None,
+    origin_task_id:       str            = "",   # ✅ SOLUÇÃO DEFINITIVA para Pro mode
 ) -> dict:
     """
     face_source    : URL de vídeo do Kling CDN (kling_url) ou path local de imagem
@@ -481,13 +496,19 @@ def generate_lipsync(
 
     # ── 4. Resolver URL do rosto ─────────────────────────────────────────────
     face_url = face_source
-    if os.path.isfile(face_source):
+    original_face_url = face_source
+
+    # ✅ Com origin_task_id: pula download/compressão — Kling usa vídeo internamente
+    if origin_task_id:
+        print(f"   🎯 origin_task_id disponível — pulando download/compressão")
+        face_url = face_source  # não vai ser usado no payload, mas mantém para fallback
+    elif os.path.isfile(face_source):
         # Imagem local → sobe no imgbb (imgbb só aceita imagens, não vídeo)
         print(f"   📤 Hospedando imagem de rosto no imgbb...")
         face_url = _upload_face_imgbb(face_source)
         if not face_url:
             return {"success": False, "error": "Falha ao hospedar imagem do rosto"}
-    else:
+    elif not origin_task_id:
         # URL de vídeo (Kling CDN) → verifica tamanho
         # imgbb NÃO aceita vídeo MP4 — usamos a URL do Kling diretamente (já é pública)
         # Se > 10MB: baixa, comprime e sobe no R2
@@ -500,8 +521,8 @@ def generate_lipsync(
         original_face_url = face_source  # ✅ guarda URL original para fallback
         if size_mb > 9:
             # Baixa, comprime e sobe no R2 para ter URL pública < 10MB
-            print(f"   🗜️ Vídeo > 9MB — comprimindo e hospedando no R2...")
-            local_video = _download_and_compress_video(face_source, job_id, max_mb=9)
+            print(f"   🗜️ Vídeo > 9MB — comprimindo para 7MB e hospedando no R2...")
+            local_video = _download_and_compress_video(face_source, job_id, max_mb=7)  # 7MB = margem segura contra proxy errors
             if local_video:
                 r2_client = get_r2_client()
                 r2_key    = f"clips/{job_id}/compressed_clip.mp4"
@@ -539,11 +560,20 @@ def generate_lipsync(
     # ── 7. Tentativas de lip sync ─────────────────────────────────────────────
     for attempt in range(1, max_retries + 1):
         print(f"\n🎤 Lip Sync — Tentativa {attempt}/{max_retries}")
-        # ✅ Na segunda tentativa, usa URL original do Kling se a comprimida falhou
-        current_face_url = original_face_url if attempt > 1 else face_url
-        if attempt > 1 and face_url != original_face_url:
-            print(f"   🔄 Tentativa {attempt}: usando URL original do Kling CDN")
-        task_id = create_lipsync_task(current_face_url, audio_url, model)
+        # Estratégia de retry:
+        # T1: URL comprimida no R2 (7MB)
+        # T2: URL original do Kling CDN (pode ser >10MB, mas vale tentar)
+        # T3: URL R2 novamente (proxy pode ter voltado)
+        if attempt == 1:
+            current_face_url = face_url
+        elif attempt == 2:
+            current_face_url = original_face_url
+            if face_url != original_face_url:
+                print(f"   🔄 Tentativa {attempt}: usando URL original do Kling CDN")
+        else:
+            current_face_url = face_url  # tenta R2 de novo
+            print(f"   🔄 Tentativa {attempt}: retry com URL R2 (proxy pode ter voltado)")
+        task_id = create_lipsync_task(current_face_url, audio_url, model, origin_task_id=origin_task_id if attempt == 1 else "")
         if not task_id:
             delay = 15 * attempt
             print(f"   ⏳ Aguardando {delay}s antes de tentar novamente...")
@@ -562,4 +592,6 @@ def generate_lipsync(
         print(f"   ⏳ Aguardando {delay}s antes de tentar novamente...")
         time.sleep(delay)
 
+    # Lip sync falhou todas as tentativas — retorna sem vídeo sincronizado
+    print(f"   ❌ Lip sync falhou após {max_retries} tentativas — clipe será usado sem sincronização")
     return {"success": False, "error": f"Lip sync falhou após {max_retries} tentativas"}
