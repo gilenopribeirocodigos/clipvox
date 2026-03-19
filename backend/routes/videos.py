@@ -747,13 +747,20 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
             return {"success": False, "scene_number": scene_num,
                     "video_url": clip.get("video_url"), "lipsync_error": "cancelled"}
 
-        print(f"🎤 Lip sync clipe {scene_num}/{total} (paralelo)...")
+        # ✅ origin_task_id = solução definitiva para Pro mode
+        # Kling usa vídeo internamente — sem proxy error, sem download externo
+        origin_task_id = clip.get("task_id", "")
+        if origin_task_id:
+            print(f"🎤 Lip sync clipe {scene_num}/{total} (origin_task_id)...")
+        else:
+            print(f"🎤 Lip sync clipe {scene_num}/{total} (video_url)...")
         result = generate_lipsync(
             face_source=face_video_url,
             audio_source=audio_path,
             job_id=clip_job_id,
             model=model,
             preextracted_vocals=vocals_path,
+            origin_task_id=origin_task_id,
         )
 
         if result["success"]:
@@ -762,10 +769,28 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
                 "video_url": result["video_url"], "original_url": face_video_url,
             }
         else:
+            # ✅ Traduz erros técnicos em mensagens amigáveis para o usuário
+            raw_error = result.get("error", "") or ""
+            if "no face" in raw_error.lower() or "identify failed" in raw_error.lower() \
+               or "609" in raw_error or "consistently visible face" in raw_error.lower():
+                user_error = "Sem rosto detectado — regenere a imagem com um rosto frontal"
+                error_type = "no_face"
+            elif "too large" in raw_error.lower() or "proxyconnect" in raw_error.lower() \
+               or "proxy" in raw_error.lower():
+                user_error = "Erro de conexão — tente regenerar o lip sync desta cena"
+                error_type = "proxy"
+            elif "cancelled" in raw_error.lower():
+                user_error = "Cancelado pelo usuário"
+                error_type = "cancelled"
+            else:
+                user_error = "Falha no lip sync — tente regenerar"
+                error_type = "unknown"
+            print(f"   ⚠️ Cena {scene_num} sem lip sync ({error_type}): {user_error}")
             return {
                 "success": True, "scene_number": scene_num,
                 "video_url": clip.get("video_url"), "original_url": face_video_url,
-                "lipsync_error": result.get("error"),
+                "lipsync_error": user_error,
+                "lipsync_error_type": error_type,
             }
 
     # ✅ Máximo 6 workers — evita OOM no Render free tier (512MB)
