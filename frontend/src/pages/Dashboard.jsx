@@ -490,6 +490,12 @@ function VideoClipCard({ clip, index, onEdit }) {
       </div>
     )
   }
+
+  // Badge de erro de lip sync com ícone e dica
+  const lipError = clip.lipsync_error
+  const lipErrorType = clip.lipsync_error_type
+  const lipErrorIcon = lipErrorType === 'no_face' ? '🚫' : lipErrorType === 'proxy' ? '🔄' : lipErrorType === 'cancelled' ? '⏸️' : '⚠️'
+  const lipErrorColor = lipErrorType === 'no_face' ? '#f97316' : '#facc15'
   return (
     <div style={{ background:'rgba(16,16,24,.9)', border:'1px solid rgba(255,255,255,.08)', borderRadius:12, overflow:'hidden', animation:`fadeUp .4s ease ${index*0.06}s both`, transition:'all .25s' }}
       onMouseEnter={e => e.currentTarget.style.borderColor='rgba(249,115,22,.35)'}
@@ -501,9 +507,15 @@ function VideoClipCard({ clip, index, onEdit }) {
         </div>
         <div style={{ position:'absolute', top:6, left:6, background:'rgba(0,0,0,.75)', borderRadius:4, padding:'2px 7px', fontSize:9, color:'#fff', fontWeight:600 }}>CENA {clip.scene_number}</div>
         <div style={{ position:'absolute', top:6, right:6, background:'rgba(249,115,22,.8)', borderRadius:4, padding:'2px 7px', fontSize:9, color:'#fff', fontWeight:600 }}>{clip.duration}s</div>
+        {lipError && (
+          <div style={{ position:'absolute', bottom:0, left:0, right:0, background:'rgba(0,0,0,.82)', padding:'5px 8px', display:'flex', alignItems:'center', gap:5 }}>
+            <span style={{ fontSize:10 }}>{lipErrorIcon}</span>
+            <span style={{ color: lipErrorColor, fontSize:9, fontWeight:600, lineHeight:1.3 }}>{lipError}</span>
+          </div>
+        )}
       </div>
       <div style={{ padding:'10px 12px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-        <div style={{ color:'#9ca3af', fontSize:10 }}>Kling AI · {clip.mode === 'pro' ? '⭐ Pro' : 'Standard'}</div>
+        <div style={{ color: lipError ? lipErrorColor : '#9ca3af', fontSize:10 }}>Kling AI · {clip.mode === 'pro' ? '⭐ Pro' : 'Standard'}{lipError ? ' · sem sync' : ' · sincronizado'}</div>
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
           {onEdit && <button onClick={e => { e.stopPropagation(); onEdit(clip) }} style={{ background:'rgba(249,115,22,.1)', border:'1px solid rgba(249,115,22,.3)', borderRadius:6, padding:'3px 8px', color:'#f97316', fontSize:10, cursor:'pointer' }}>✏️ Editar</button>}
           <a href={clip.video_url} download={`cena_${clip.scene_number}.mp4`} target="_blank" rel="noreferrer"
@@ -690,6 +702,40 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted, onCancel, onEdit
 // ══════════════════════════════════════════════════════════════════════════════
 // 🎤 LIP SYNC PANEL
 // ══════════════════════════════════════════════════════════════════════════════
+// Traduz tipo de erro em dica de ação para o usuário
+function LipSyncErrorSummary({ clips }) {
+  if (!clips || !clips.length) return null
+  const failed = clips.filter(c => c.lipsync_error)
+  if (!failed.length) return null
+
+  const noFace   = failed.filter(c => c.lipsync_error_type === 'no_face')
+  const proxy    = failed.filter(c => c.lipsync_error_type === 'proxy')
+  const others   = failed.filter(c => !['no_face','proxy','cancelled'].includes(c.lipsync_error_type))
+
+  return (
+    <div style={{ marginTop:12, background:'rgba(250,204,21,.06)', border:'1px solid rgba(250,204,21,.2)', borderRadius:12, padding:'12px 16px' }}>
+      <div style={{ color:'#facc15', fontSize:12, fontWeight:600, marginBottom:8 }}>
+        ⚠️ {failed.length} cena{failed.length > 1 ? 's' : ''} sem sincronização de lábios
+      </div>
+      {noFace.length > 0 && (
+        <div style={{ color:'#9ca3af', fontSize:11, marginBottom:4 }}>
+          🚫 <strong style={{color:'#f97316'}}>Cenas {noFace.map(c => c.scene_number).join(', ')}</strong>: sem rosto detectável — clique em ✏️ Editar e regenere a imagem com rosto frontal visível
+        </div>
+      )}
+      {proxy.length > 0 && (
+        <div style={{ color:'#9ca3af', fontSize:11, marginBottom:4 }}>
+          🔄 <strong style={{color:'#facc15'}}>Cenas {proxy.map(c => c.scene_number).join(', ')}</strong>: erro de conexão temporário — clique em ✏️ Editar e regenere o lip sync
+        </div>
+      )}
+      {others.length > 0 && (
+        <div style={{ color:'#9ca3af', fontSize:11 }}>
+          ⚠️ <strong style={{color:'#fff'}}>Cenas {others.map(c => c.scene_number).join(', ')}</strong>: falha desconhecida — tente regenerar
+        </div>
+      )}
+    </div>
+  )
+}
+
 function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncStatus, onCancel }) {
   // ✅ Se chegar com 'processing' do Supabase, consideramos travado (servidor reiniciou)
   const isStuck = initialLipSyncStatus === 'processing'
@@ -853,6 +899,8 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncSta
           {onCancel && <button onClick={onCancel} style={{ marginTop:16, background:'rgba(239,68,68,.1)', border:'1px solid rgba(239,68,68,.3)', borderRadius:10, padding:'8px 20px', color:'#ef4444', fontSize:12, cursor:'pointer' }}>🛑 Cancelar Lip Sync</button>}
         </div>
       )}
+
+      {status === 'completed' && <LipSyncErrorSummary clips={videoClips} />}
 
       {status === 'completed' && lipUrl && (
         <div style={{ textAlign:'center', padding:'16px 0' }}>
