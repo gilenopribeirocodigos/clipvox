@@ -464,15 +464,8 @@ def generate_lipsync(
         # ✅ Vocals já extraídos antecipadamente — pula LALAL
         print(f"   🎵 Usando vocals pré-extraídos: {os.path.basename(preextracted_vocals)}")
         audio_path = _convert_to_mp3(preextracted_vocals, f"{job_id}_vocals")
-    elif extract_vocals_first and os.path.isfile(audio_path):
-        from services.lalal_vocals import extract_vocals
-        print(f"🎵 Extraindo vocals com LALAL.AI para melhorar lip sync...")
-        vocals_path = extract_vocals(audio_path, job_id)
-        if vocals_path:
-            audio_path = _convert_to_mp3(vocals_path, f"{job_id}_vocals")
-            print(f"   ✅ Usando vocals isolados: {os.path.basename(audio_path)}")
-        else:
-            print(f"   ⚠️ LALAL.AI falhou — usando áudio original convertido")
+    # LALAL.AI removido — StemSplit já faz a extração antecipadamente
+    # Se vocals não foram pré-extraídos, usa áudio original (já convertido para MP3)
 
     # ── 3. ✅ Trimar áudio para duração do clipe ──────────────────────────────
     # Detecta duração do vídeo automaticamente se não foi passada
@@ -504,6 +497,7 @@ def generate_lipsync(
         size_mb = content_length / (1024 * 1024)
         print(f"   📦 Tamanho estimado: {size_mb:.1f}MB")
 
+        original_face_url = face_source  # ✅ guarda URL original para fallback
         if size_mb > 9:
             # Baixa, comprime e sobe no R2 para ter URL pública < 10MB
             print(f"   🗜️ Vídeo > 9MB — comprimindo e hospedando no R2...")
@@ -520,9 +514,11 @@ def generate_lipsync(
                 print(f"   ✅ Vídeo comprimido no R2: {face_url}")
                 os.remove(local_video)
             else:
-                print(f"   ⚠️ Compressão falhou — tentando URL original")
+                print(f"   ⚠️ Compressão falhou — usando URL original")
+                face_url = original_face_url
         else:
             print(f"   ✅ Vídeo dentro do limite — usando URL original do Kling")
+            original_face_url = face_url  # mesma URL, sem compressão
 
     # ── 5. Upload do áudio para R2 ────────────────────────────────────────────
     print(f"   📤 Hospedando áudio no Cloudflare R2...")
@@ -543,7 +539,11 @@ def generate_lipsync(
     # ── 7. Tentativas de lip sync ─────────────────────────────────────────────
     for attempt in range(1, max_retries + 1):
         print(f"\n🎤 Lip Sync — Tentativa {attempt}/{max_retries}")
-        task_id = create_lipsync_task(face_url, audio_url, model)
+        # ✅ Na segunda tentativa, usa URL original do Kling se a comprimida falhou
+        current_face_url = original_face_url if attempt > 1 else face_url
+        if attempt > 1 and face_url != original_face_url:
+            print(f"   🔄 Tentativa {attempt}: usando URL original do Kling CDN")
+        task_id = create_lipsync_task(current_face_url, audio_url, model)
         if not task_id:
             delay = 15 * attempt
             print(f"   ⏳ Aguardando {delay}s antes de tentar novamente...")
