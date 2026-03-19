@@ -188,7 +188,7 @@ def _create_job(upload_key: str) -> Optional[str]:
         )
         print(f"   📥 Job HTTP {resp.status_code}: {resp.text[:200]}")
 
-        if resp.status_code != 200:
+        if resp.status_code not in (200, 201):
             print(f"   ❌ Falha ao criar job: {resp.text[:200]}")
             return None
 
