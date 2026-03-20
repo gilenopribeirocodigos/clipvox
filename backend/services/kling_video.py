@@ -2,6 +2,11 @@
 🎬 ClipVox - Kling Video Service (via PiAPI)
 Gera clipes de vídeo usando PiAPI como intermediário do Kling AI.
 Auth: x-api-key (PIAPI_API_KEY)
+
+Modelos disponíveis via PiAPI:
+  - kling 1.6: std=$0.14/5s  pro=$0.49/5s  (antigo padrão)
+  - kling 2.1: std=$0.125/5s pro=$0.25/5s  ← ATUAL PADRÃO (melhor custo-benefício)
+  - kling 3.0: std=$0.50/5s               (caro, sem vantagem para nosso caso)
 """
 
 import os
@@ -13,6 +18,9 @@ from typing import Optional
 PIAPI_API_KEY = os.getenv("PIAPI_API_KEY", "")
 PIAPI_BASE    = "https://api.piapi.ai"
 IMGBB_KEY     = os.getenv("IMGBB_API_KEY", "")
+
+# ✅ Versão padrão do Kling — 2.1 é mais barato e melhor que 1.6
+KLING_DEFAULT_VERSION = "2.1"
 
 
 def _auth_headers() -> dict:
@@ -61,14 +69,16 @@ def create_kling_video_task(
     aspect_ratio: str = "16:9",
     duration: int = 5,
     mode: str = "std",
-    model: str = "kling"
+    model: str = "kling",
+    version: str = KLING_DEFAULT_VERSION,
 ) -> Optional[str]:
-    print(f"\nCreating video task Scene {scene_number} | {model} | {mode} | {duration}s")
+    print(f"\nCreating video task Scene {scene_number} | kling {version} | {mode} | {duration}s")
 
     if not PIAPI_API_KEY:
         print("   PIAPI_API_KEY nao configurada")
         return None
 
+    # ✅ Kling 2.1 usa "version" no input para especificar o modelo
     payload = {
         "model":     model,
         "task_type": "video_generation",
@@ -78,6 +88,7 @@ def create_kling_video_task(
             "duration":     duration,
             "mode":         mode,
             "aspect_ratio": aspect_ratio,
+            "version":      version,  # ✅ "2.1" para Kling 2.1
         }
     }
 
@@ -203,9 +214,20 @@ def generate_video_clip(
     duration: int = 5,
     mode: str = "std",
     model: str = "kling",
+    version: str = KLING_DEFAULT_VERSION,
     job_id: str = "",
-    max_retries: int = 3
+    max_retries: int = 3,
+    # ── compatibilidade com chamadas antigas que passam scene= ──
+    scene: dict = None,
+    bpm: int = None,
 ) -> dict:
+    # ✅ Suporte a chamada via scene= (usado em process_regen_video)
+    if scene and not image_url:
+        image_url  = scene.get("image_url", "")
+        image_path = scene.get("image_path", image_path)
+        prompt     = scene.get("prompt", prompt)
+        scene_number = scene.get("scene_number", scene_number)
+
     public_url = image_url
 
     if not public_url or public_url.startswith("/api/") or public_url.startswith("/"):
@@ -219,7 +241,8 @@ def generate_video_clip(
 
         task_id = create_kling_video_task(
             image_url=public_url, prompt=prompt, scene_number=scene_number,
-            aspect_ratio=aspect_ratio, duration=duration, mode=mode, model=model
+            aspect_ratio=aspect_ratio, duration=duration, mode=mode,
+            model=model, version=version,
         )
 
         if not task_id:
@@ -235,11 +258,13 @@ def generate_video_clip(
             return {
                 "success":      True,
                 "scene_number": scene_number,
-                "video_url":    final_url,  # R2 — para display/download
-                "kling_url":    kling_url,  # ✅ URL original Kling — para lip sync
+                "video_url":    final_url,
+                "kling_url":    kling_url,
                 "video_path":   local_path,
                 "task_id":      task_id,
                 "attempt":      attempt,
+                "version":      version,
+                "mode":         mode,
             }
 
         time.sleep(20 * attempt)
@@ -251,6 +276,7 @@ def generate_video_clip(
         "kling_url":    None,
         "video_path":   None,
         "task_id":      None,
+        "version":      version,
         "error":        f"Falhou apos {max_retries} tentativas",
     }
 
@@ -261,13 +287,16 @@ def generate_video_clips_batch(
     duration: int = 5,
     mode: str = "std",
     model: str = "kling",
+    version: str = KLING_DEFAULT_VERSION,
     job_id: str = "",
     bpm: int = None,
     **kwargs
 ) -> list:
     total = len(scenes)
-    print(f"\nGenerating {total} video clips via PiAPI (Kling) — PARALELO...")
-    print(f"   Model: {model} | Mode: {mode} | {duration}s | {aspect_ratio}")
+    # ✅ Custo estimado por clip: std=$0.125, pro=$0.25 (Kling 2.1)
+    cost_per_clip = 0.125 if mode == "std" else 0.25
+    print(f"\nGenerating {total} video clips via PiAPI (Kling {version}) — PARALELO...")
+    print(f"   Mode: {mode} | {duration}s | {aspect_ratio} | ~${cost_per_clip}/clip | Total estimado: ~${total * cost_per_clip:.2f}")
 
     def _generate_one(scene):
         return generate_video_clip(
@@ -276,11 +305,11 @@ def generate_video_clips_batch(
             prompt=scene.get("prompt", ""),
             scene_number=scene["scene_number"],
             aspect_ratio=aspect_ratio,
-            duration=duration, mode=mode, model=model, job_id=job_id
+            duration=duration, mode=mode, model=model,
+            version=version, job_id=job_id,
         )
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    # Limita a 6 workers para não sobrecarregar PiAPI rate limit
     max_workers = min(total, 6)
     results_map = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -289,7 +318,6 @@ def generate_video_clips_batch(
             result = future.result()
             results_map[result["scene_number"]] = result
 
-    # Retorna ordenado por scene_number
     results = [results_map[k] for k in sorted(results_map)]
     successful_count = sum(1 for r in results if r["success"])
     print(f"\nGenerated {successful_count}/{total} clips successfully")
