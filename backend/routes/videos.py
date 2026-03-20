@@ -205,7 +205,7 @@ async def generate_video_clips(
         "job_id":         job_id,
         "status":         "processing",
         "message":        f"Gerando {total_scenes} clipes de video com Kling AI...",
-        "estimated_cost": f"~${total_scenes * (0.14 if mode == 'std' else 0.28):.2f}",
+        "estimated_cost": f"~${total_scenes * (0.125 if mode == 'std' else 0.25):.2f}",
         "mode":           mode,
     }
 
@@ -549,7 +549,8 @@ def process_video_clips(job_id: str, mode: str = "std"):
         aspect_ratio = job.get("aspect_ratio", "16:9")
         valid_scenes = [s for s in scenes if s.get("success", False) and s.get("image_url")]
         video_results = generate_videos_batch(
-            scenes=valid_scenes, bpm=bpm, aspect_ratio=aspect_ratio, mode=mode, job_id=job_id,
+            scenes=valid_scenes, bpm=bpm, aspect_ratio=aspect_ratio,
+            mode=mode, job_id=job_id, version="2.1",
         )
         success_count = sum(1 for r in video_results if r.get("success", False))
         print(f"Clipes gerados: {success_count}/{len(valid_scenes)}")
@@ -580,7 +581,8 @@ def process_retry_clips(job_id: str, failed_scenes: list, mode: str = "std"):
         print(f"\n🔄 Retry: {len(failed_scenes)} cenas falhadas — job {job_id[:8]}")
 
         new_results = generate_videos_batch(
-            scenes=failed_scenes, bpm=bpm, aspect_ratio=aspect_ratio, mode=mode, job_id=job_id,
+            scenes=failed_scenes, bpm=bpm, aspect_ratio=aspect_ratio,
+            mode=mode, job_id=job_id, version="2.1",
         )
 
         # Mescla resultados: mantém os que passaram, substitui os que falharam
