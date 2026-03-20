@@ -770,7 +770,7 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncSta
         try {
           const r = await fetch(`${API_URL}/api/videos/status/${jobId}`)
           const s = await r.json()
-          if (s.lipsync_status === 'completed') {
+          if (s.lipsync_status === 'completed' && s.lipsync_clips?.some(c => c.success)) {
             clearInterval(pollRef.current)
             setStatus('completed')
             setLipUrl(s.lipsync_url)
@@ -1160,7 +1160,7 @@ export default function Dashboard({ onBack }) {
       setCompletedClips(jobStatus.video_clips)
     }
     // Lip sync já concluído
-    if (jobStatus.lipsync_status === 'completed') {
+    if (jobStatus.lipsync_status === 'completed' && jobStatus.lipsync_clips?.some(c => c.success)) {
       setLipSyncDone(true)
       setLipSyncUrl(jobStatus.lipsync_url || null)
     }
