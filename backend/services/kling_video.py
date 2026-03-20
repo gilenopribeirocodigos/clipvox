@@ -88,7 +88,7 @@ def create_kling_video_task(
             "duration":     duration,
             "mode":         mode,
             "aspect_ratio": aspect_ratio,
-            "version":      version,  # ✅ "2.1" para Kling 2.1
+            # ✅ Sem "version" — endpoint padrão PiAPI já usa 2.1 como padrão
         }
     }
 
