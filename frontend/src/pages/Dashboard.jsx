@@ -686,10 +686,13 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted, onCancel, onEdit
 // ✅ FIX B: mostra lipsync_clips com botão individual de retry por cena
 // ✅ FIX C: polling de regen individual via lipsync_regenerating
 // ══════════════════════════════════════════════════════════════════════════════
-function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncStatus, onCancel, onRetrySyncClip, lipSyncClips }) {
+function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncStatus, onCancel, onRetrySyncClip, lipSyncClips, initialLipUrl }) {
   const isStuck = initialLipSyncStatus === 'processing'
-  const [status,    setStatus]    = useState(isStuck ? 'stuck' : null)
-  const [lipUrl,    setLipUrl]    = useState(null)
+  // ✅ FIX C: inicializa como 'completed' quando lip sync já foi concluído (ex: retomando job)
+  const [status,    setStatus]    = useState(
+    isStuck ? 'stuck' : initialLipSyncStatus === 'completed' ? 'completed' : null
+  )
+  const [lipUrl,    setLipUrl]    = useState(initialLipUrl || null)
   const [error,     setError]     = useState(null)
   const [model,     setModel]     = useState('kling')
   const [skipped,   setSkipped]   = useState(false)
@@ -1391,6 +1394,7 @@ export default function Dashboard({ onBack }) {
                   videoClips={completedClips}
                   onLipSyncCompleted={handleLipSyncCompleted}
                   initialLipSyncStatus="completed"
+                  initialLipUrl={lipSyncUrl}
                   onCancel={handleCancel}
                   onRetrySyncClip={handleRetrySyncClip}
                   lipSyncClips={lipSyncClips}
