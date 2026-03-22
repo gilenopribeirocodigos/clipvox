@@ -453,6 +453,21 @@ def process_video_pipeline(job_id: str):
         job["scenes"] = scenes_with_images
         scenes_generated = sum(1 for s in scenes_with_images if s.get("success", False))
         jobs_db[job_id]["scenes"] = scenes_with_images
+
+        # ✅ Normaliza campo 'prompt' — garante que o frontend sempre encontre
+        # independente do nome usado internamente pelo ai_concept/video_generation
+        for scene in jobs_db[job_id]["scenes"]:
+            if not scene.get("prompt"):
+                scene["prompt"] = (
+                    scene.get("visual_prompt") or
+                    scene.get("image_prompt") or
+                    scene.get("prompt_used") or
+                    scene.get("visual_description") or
+                    scene.get("scene_description") or
+                    scene.get("description") or
+                    ""
+                )
+
         try:
             save_job(job_id, jobs_db[job_id])
         except Exception as _e:
