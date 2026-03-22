@@ -45,6 +45,29 @@ def get_virtual_duration(duration: str) -> int:
         return None
 
 
+def _parse_lipsync_failure(result: dict, default_msg: str = "Falha no lip sync — tente regenerar"):
+    error_type = (result.get("error_type") or "unknown").lower()
+    raw = (result.get("error") or "").lower()
+
+    if error_type == "no_face" or "609" in raw or "identify failed" in raw or "no face" in raw:
+        return "Sem rosto detectado — regenere a imagem com rosto frontal", "no_face"
+    if error_type == "proxy" or "proxyconnect" in raw or "proxy" in raw:
+        return "Erro de conexão no provedor — tente regenerar o lip sync desta cena", "proxy"
+    if error_type == "busy" or "service busy" in raw or "500 service" in raw:
+        return "Servidor sobrecarregado — tente regenerar esta cena", "busy"
+    if error_type == "too_large" or "maximum is 10mb" in raw or "too large" in raw:
+        return "Vídeo acima do limite do lip sync — o sistema tentará usar versão comprimida", "too_large"
+    if error_type == "deleted" or "deleted the task" in raw or "404 not found" in raw:
+        return "Task removida pelo provedor — tente regenerar esta cena", "deleted"
+    if error_type == "timeout" or "timed out" in raw:
+        return "Tempo limite excedido no provedor — tente regenerar esta cena", "timeout"
+    if error_type == "cancelled" or "cancelled" in raw:
+        return "Cancelado pelo usuário", "cancelled"
+    if error_type == "inaccessible":
+        return "Arquivo de vídeo/áudio ficou inacessível — tente regenerar esta cena", "inaccessible"
+    return default_msg, error_type or "unknown"
+
+
 @router.post("/generate")
 async def generate_video(
     audio:        UploadFile      = File(...),
@@ -650,17 +673,7 @@ def process_regen_lipsync(job_id: str, scene_number: int, clip: dict,
             }
             print(f"   ✅ Cena {scene_number} sincronizada com sucesso")
         else:
-            raw = result.get("error", "") or ""
-            if "no face" in raw.lower() or "609" in raw or "identify failed" in raw.lower():
-                msg, etype = "Sem rosto detectado — regenere a imagem com rosto frontal", "no_face"
-            elif "proxy" in raw.lower() or "proxyconnect" in raw.lower():
-                msg, etype = "Erro de conexão — tente novamente mais tarde", "proxy"
-            elif "service busy" in raw.lower() or "500 service" in raw.lower():
-                msg, etype = "Servidor sobrecarregado — tente mais tarde", "busy"
-            elif "cancelled" in raw.lower():
-                msg, etype = "Cancelado pelo usuário", "cancelled"
-            else:
-                msg, etype = "Falha no lip sync — tente novamente", "unknown"
+            msg, etype = _parse_lipsync_failure(result, default_msg="Falha no lip sync — tente novamente")
             new_clip = {
                 "success": True, "scene_number": scene_number,
                 "video_url": clip.get("video_url"), "original_url": face_video_url,
@@ -744,17 +757,7 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
         if result["success"]:
             return {"success": True, "scene_number": scene_num,
                     "video_url": result["video_url"], "original_url": face_video_url}
-        raw = result.get("error", "") or ""
-        if "no face" in raw.lower() or "609" in raw or "identify failed" in raw.lower():
-            msg, etype = "Sem rosto detectado — regenere a imagem", "no_face"
-        elif "proxy" in raw.lower() or "proxyconnect" in raw.lower():
-            msg, etype = "Erro de conexão — tente regenerar o lip sync desta cena", "proxy"
-        elif "service busy" in raw.lower() or "500 service" in raw.lower():
-            msg, etype = "Servidor sobrecarregado — tente regenerar esta cena", "busy"
-        elif "cancelled" in raw.lower():
-            msg, etype = "Cancelado pelo usuário", "cancelled"
-        else:
-            msg, etype = "Falha no lip sync — tente regenerar", "unknown"
+        msg, etype = _parse_lipsync_failure(result, default_msg="Falha no lip sync — tente regenerar")
         return {"success": True, "scene_number": scene_num,
                 "video_url": clip.get("video_url"), "original_url": face_video_url,
                 "lipsync_error": msg, "lipsync_error_type": etype}
