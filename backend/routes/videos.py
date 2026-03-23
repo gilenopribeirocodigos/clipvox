@@ -45,49 +45,6 @@ def get_virtual_duration(duration: str) -> int:
         return None
 
 
-def _map_lipsync_failure(result: dict):
-    raw = (result.get("raw_error") or result.get("error") or "") if isinstance(result, dict) else ""
-    etype = result.get("error_type") if isinstance(result, dict) else None
-    raw_l = raw.lower()
-
-    if not etype:
-        if "no face" in raw_l or "609" in raw or "identify failed" in raw_l:
-            etype = "no_face"
-        elif "proxy" in raw_l or "proxyconnect" in raw_l:
-            etype = "proxy"
-        elif "service busy" in raw_l or "500 service" in raw_l:
-            etype = "busy"
-        elif "too large" in raw_l or "10mb" in raw_l or "file size" in raw_l:
-            etype = "too_large"
-        elif "404 not found" in raw_l and ("deleted" in raw_l or "content violation" in raw_l):
-            etype = "deleted"
-        elif "timeout" in raw_l or "timed out" in raw_l or "read timed out" in raw_l:
-            etype = "timeout"
-        elif "cancelled" in raw_l or "cancelado" in raw_l:
-            etype = "cancelled"
-        else:
-            etype = "unknown"
-
-    if etype == "no_face":
-        msg = "Sem rosto detectado — regenere a imagem com rosto frontal"
-    elif etype == "proxy":
-        msg = "Erro de conexão — tente novamente mais tarde"
-    elif etype == "busy":
-        msg = "Servidor sobrecarregado — tente mais tarde"
-    elif etype == "too_large":
-        msg = "Vídeo acima do limite do Kling — regenere esta cena"
-    elif etype == "deleted":
-        msg = "Task removida pelo Kling — regenere esta cena"
-    elif etype == "timeout":
-        msg = "Tempo de resposta excedido — tente regenerar"
-    elif etype == "cancelled":
-        msg = "Cancelado pelo usuário"
-    else:
-        msg = "Falha no lip sync — tente novamente"
-
-    return msg, etype, raw
-
-
 @router.post("/generate")
 async def generate_video(
     audio:        UploadFile      = File(...),
@@ -693,7 +650,17 @@ def process_regen_lipsync(job_id: str, scene_number: int, clip: dict,
             }
             print(f"   ✅ Cena {scene_number} sincronizada com sucesso")
         else:
-            msg, etype, raw = _map_lipsync_failure(result)
+            raw = result.get("error", "") or ""
+            if "no face" in raw.lower() or "609" in raw or "identify failed" in raw.lower():
+                msg, etype = "Sem rosto detectado — regenere a imagem com rosto frontal", "no_face"
+            elif "proxy" in raw.lower() or "proxyconnect" in raw.lower():
+                msg, etype = "Erro de conexão — tente novamente mais tarde", "proxy"
+            elif "service busy" in raw.lower() or "500 service" in raw.lower():
+                msg, etype = "Servidor sobrecarregado — tente mais tarde", "busy"
+            elif "cancelled" in raw.lower():
+                msg, etype = "Cancelado pelo usuário", "cancelled"
+            else:
+                msg, etype = "Falha no lip sync — tente novamente", "unknown"
             new_clip = {
                 "success": True, "scene_number": scene_number,
                 "video_url": clip.get("video_url"), "original_url": face_video_url,
@@ -777,23 +744,17 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
         if result["success"]:
             return {"success": True, "scene_number": scene_num,
                     "video_url": result["video_url"], "original_url": face_video_url}
-        msg, etype, raw = _map_lipsync_failure(result)
-        if etype == "no_face":
-            msg = "Sem rosto detectado — regenere a imagem"
-        elif etype == "proxy":
-            msg = "Erro de conexão — tente regenerar o lip sync desta cena"
-        elif etype == "busy":
-            msg = "Servidor sobrecarregado — tente regenerar esta cena"
-        elif etype == "too_large":
-            msg = "Vídeo acima do limite do Kling — regenere esta cena"
-        elif etype == "deleted":
-            msg = "Task removida pelo Kling — regenere esta cena"
-        elif etype == "timeout":
-            msg = "Tempo de resposta excedido — tente regenerar"
-        elif etype == "cancelled":
-            msg = "Cancelado pelo usuário"
+        raw = result.get("error", "") or ""
+        if "no face" in raw.lower() or "609" in raw or "identify failed" in raw.lower():
+            msg, etype = "Sem rosto detectado — regenere a imagem", "no_face"
+        elif "proxy" in raw.lower() or "proxyconnect" in raw.lower():
+            msg, etype = "Erro de conexão — tente regenerar o lip sync desta cena", "proxy"
+        elif "service busy" in raw.lower() or "500 service" in raw.lower():
+            msg, etype = "Servidor sobrecarregado — tente regenerar esta cena", "busy"
+        elif "cancelled" in raw.lower():
+            msg, etype = "Cancelado pelo usuário", "cancelled"
         else:
-            msg = "Falha no lip sync — tente regenerar"
+            msg, etype = "Falha no lip sync — tente regenerar", "unknown"
         return {"success": True, "scene_number": scene_num,
                 "video_url": clip.get("video_url"), "original_url": face_video_url,
                 "lipsync_error": msg, "lipsync_error_type": etype}
