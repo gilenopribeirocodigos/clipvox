@@ -45,6 +45,128 @@ def get_virtual_duration(duration: str) -> int:
         return None
 
 
+def _scene_prompt(job: dict, scene_number: int) -> str:
+    scenes = (job or {}).get("scenes") or []
+    scene = next((s for s in scenes if s.get("scene_number") == scene_number), None) or {}
+    return (
+        scene.get("prompt")
+        or scene.get("visual_prompt")
+        or scene.get("image_prompt")
+        or scene.get("prompt_used")
+        or scene.get("visual_description")
+        or scene.get("scene_description")
+        or scene.get("description")
+        or ""
+    )
+
+
+def _scene_meta(job: dict, scene_number: int) -> dict:
+    scenes = (job or {}).get("scenes") or []
+    scene = next((s for s in scenes if s.get("scene_number") == scene_number), None) or {}
+    prompt = _scene_prompt(job, scene_number)
+    return {
+        "prompt": prompt,
+        "scene_prompt": prompt,
+        "prompt_source": "scene",
+        "scene_image_url": scene.get("image_url"),
+        "scene_image_path": scene.get("image_path"),
+    }
+
+
+def _augment_clip_with_scene(job: dict, clip: dict) -> dict:
+    scene_number = clip.get("scene_number")
+    if not scene_number:
+        return clip
+    out = dict(clip)
+    out.update({k: v for k, v in _scene_meta(job, scene_number).items() if k not in out or not out.get(k)})
+    return out
+
+
+def _normalize_lipsync_error(raw_error: str, last_resort: bool = False) -> tuple[str, str, bool, str]:
+    raw = (raw_error or "").lower()
+    face_related = any(token in raw for token in [
+        "lacks a consistently visible face",
+        "consistently visible face",
+        "face frequently leaves the screen",
+        "no face",
+        "identify failed",
+        "status 609",
+        " 609",
+    ])
+    busy_related = any(token in raw for token in [
+        "service busy",
+        "submit task failed: 500",
+        "500 service",
+    ])
+    timeout_related = any(token in raw for token in [
+        "timed out",
+        "timeout",
+        "read timeout",
+    ])
+    proxy_related = any(token in raw for token in [
+        "proxyconnect",
+        "proxy",
+        "connection refused",
+    ])
+    deleted_related = any(token in raw for token in [
+        "404 not found",
+        "deleted the task",
+        "deleted",
+    ])
+    cancelled_related = "cancelled" in raw
+
+    if face_related:
+        if last_resort:
+            return (
+                "Sem rosto estável/visível para o lip sync — último recurso: trate como no_face e regenere a cena com rosto maior, frontal e mais tempo em tela.",
+                "no_face",
+                True,
+                "face_visibility",
+            )
+        return (
+            "Lip sync rejeitado por rosto pouco visível/instável — regenere a cena com rosto mais frontal, maior e presente por mais tempo na tela.",
+            "regen_scene",
+            True,
+            "face_visibility",
+        )
+    if busy_related:
+        return (
+            "Serviço externo indisponível/ocupado — regenere esta cena para tentar novamente com um novo clipe.",
+            "regen_scene",
+            True,
+            "provider_busy",
+        )
+    if timeout_related:
+        return (
+            "Tempo esgotado no serviço externo — regenere esta cena para nova tentativa.",
+            "regen_scene",
+            True,
+            "provider_timeout",
+        )
+    if proxy_related:
+        return (
+            "Falha transitória de rede do serviço externo — regenere esta cena para tentar novamente.",
+            "regen_scene",
+            True,
+            "provider_network",
+        )
+    if deleted_related:
+        return (
+            "O serviço externo descartou a task durante o processamento — regenere esta cena.",
+            "regen_scene",
+            True,
+            "provider_deleted",
+        )
+    if cancelled_related:
+        return ("Cancelado pelo usuário", "cancelled", False, "cancelled")
+    return (
+        "Falha no lip sync — regenere esta cena para tentar novamente com novo clipe.",
+        "regen_scene",
+        True,
+        "unknown",
+    )
+
+
 @router.post("/generate")
 async def generate_video(
     audio:        UploadFile      = File(...),
@@ -506,6 +628,7 @@ def process_video_clips(job_id: str, mode: str = "std"):
             aspect_ratio=job.get("aspect_ratio", "16:9"),
             mode=mode, job_id=job_id, version="2.1",
         )
+        video_results = [_augment_clip_with_scene(job, clip) for clip in (video_results or [])]
         jobs_db[job_id]["video_clips"]   = video_results
         jobs_db[job_id]["videos_status"] = "completed"
         save_job(job_id, jobs_db[job_id])
@@ -529,6 +652,7 @@ def process_retry_clips(job_id: str, failed_scenes: list, mode: str = "std"):
             aspect_ratio=job.get("aspect_ratio", "16:9"),
             mode=mode, job_id=job_id, version="2.1",
         )
+        new_results = [_augment_clip_with_scene(job, clip) for clip in (new_results or [])]
         existing = {c["scene_number"]: c for c in (job.get("video_clips") or [])}
         for r in new_results:
             existing[r["scene_number"]] = r
@@ -595,6 +719,7 @@ def process_regen_video(job_id: str, scene_number: int, scene: dict, mode: str):
             scene=scene, bpm=job.get("audio_bpm", 120),
             aspect_ratio=job.get("aspect_ratio", "16:9"), mode=mode, job_id=job_id
         )
+        result = _augment_clip_with_scene(job, result)
         clips = jobs_db[job_id].get("video_clips") or []
         found = False
         for i, c in enumerate(clips):
@@ -641,31 +766,29 @@ def process_regen_lipsync(job_id: str, scene_number: int, clip: dict,
             preextracted_vocals=vocals_path, origin_task_id=origin_task_id,
         )
 
+        scene_meta = _scene_meta(job, scene_number)
         if result["success"]:
             new_clip = {
                 "success": True, "scene_number": scene_number,
                 "video_url": result["video_url"], "original_url": face_video_url,
                 "lipsync_regenerating": False,
                 "lipsync_error": None, "lipsync_error_type": None,
+                "needs_scene_regen": False, "regen_reason": None,
+                **scene_meta,
             }
             print(f"   ✅ Cena {scene_number} sincronizada com sucesso")
         else:
-            raw = result.get("error", "") or ""
-            if "no face" in raw.lower() or "609" in raw or "identify failed" in raw.lower():
-                msg, etype = "Sem rosto detectado — regenere a imagem com rosto frontal", "no_face"
-            elif "proxy" in raw.lower() or "proxyconnect" in raw.lower():
-                msg, etype = "Erro de conexão — tente novamente mais tarde", "proxy"
-            elif "service busy" in raw.lower() or "500 service" in raw.lower():
-                msg, etype = "Servidor sobrecarregado — tente mais tarde", "busy"
-            elif "cancelled" in raw.lower():
-                msg, etype = "Cancelado pelo usuário", "cancelled"
-            else:
-                msg, etype = "Falha no lip sync — tente novamente", "unknown"
+            raw = result.get("error", "") or result.get("raw_error", "") or ""
+            msg, etype, needs_scene_regen, regen_reason = _normalize_lipsync_error(raw, last_resort=True)
             new_clip = {
                 "success": True, "scene_number": scene_number,
                 "video_url": clip.get("video_url"), "original_url": face_video_url,
                 "lipsync_error": msg, "lipsync_error_type": etype,
                 "lipsync_regenerating": False,
+                "needs_scene_regen": needs_scene_regen,
+                "regen_reason": regen_reason,
+                "raw_error": raw[:1000],
+                **scene_meta,
             }
             print(f"   ❌ Cena {scene_number} falhou novamente ({etype})")
 
@@ -733,7 +856,7 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
         clip_job_id    = f"{job_id}_scene{scene_num:03d}"
         if jobs_db.get(job_id, {}).get("cancelled"):
             return {"success": False, "scene_number": scene_num,
-                    "video_url": clip.get("video_url"), "lipsync_error": "cancelled"}
+                    "video_url": clip.get("video_url"), "lipsync_error": "cancelled", **_scene_meta(job, scene_num)}
         origin_task_id = clip.get("task_id", "")
         print(f"🎤 Lip sync clipe {scene_num}/{total}...")
         result = generate_lipsync(
@@ -741,23 +864,20 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
             job_id=clip_job_id, model=model,
             preextracted_vocals=vocals_path, origin_task_id=origin_task_id,
         )
+        scene_meta = _scene_meta(job, scene_num)
         if result["success"]:
             return {"success": True, "scene_number": scene_num,
-                    "video_url": result["video_url"], "original_url": face_video_url}
-        raw = result.get("error", "") or ""
-        if "no face" in raw.lower() or "609" in raw or "identify failed" in raw.lower():
-            msg, etype = "Sem rosto detectado — regenere a imagem", "no_face"
-        elif "proxy" in raw.lower() or "proxyconnect" in raw.lower():
-            msg, etype = "Erro de conexão — tente regenerar o lip sync desta cena", "proxy"
-        elif "service busy" in raw.lower() or "500 service" in raw.lower():
-            msg, etype = "Servidor sobrecarregado — tente regenerar esta cena", "busy"
-        elif "cancelled" in raw.lower():
-            msg, etype = "Cancelado pelo usuário", "cancelled"
-        else:
-            msg, etype = "Falha no lip sync — tente regenerar", "unknown"
+                    "video_url": result["video_url"], "original_url": face_video_url,
+                    "lipsync_error": None, "lipsync_error_type": None,
+                    "needs_scene_regen": False, "regen_reason": None,
+                    **scene_meta}
+        raw = result.get("error", "") or result.get("raw_error", "") or ""
+        msg, etype, needs_scene_regen, regen_reason = _normalize_lipsync_error(raw, last_resort=False)
         return {"success": True, "scene_number": scene_num,
                 "video_url": clip.get("video_url"), "original_url": face_video_url,
-                "lipsync_error": msg, "lipsync_error_type": etype}
+                "lipsync_error": msg, "lipsync_error_type": etype,
+                "needs_scene_regen": needs_scene_regen, "regen_reason": regen_reason,
+                "raw_error": raw[:1000], **scene_meta}
 
     results_map = {}
     with ThreadPoolExecutor(max_workers=1) as executor:
