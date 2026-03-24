@@ -4,6 +4,7 @@ from typing import Optional
 import os
 import uuid
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import UPLOAD_DIR, CREDITS_PER_VIDEO
 from services.audio_analysis import analyze_audio_cinematic
@@ -18,6 +19,10 @@ router  = APIRouter()
 
 from services.job_store import save_job, load_job, load_recent_jobs
 jobs_db: dict = {}
+
+# Garante apenas UM lip sync ativo por vez neste processo (evita sobrecarga do provider)
+LIPSYNC_SERIAL_LOCK = threading.Lock()
+LIPSYNC_COOLDOWN_SECONDS = int(os.getenv("LIPSYNC_COOLDOWN_SECONDS", "12"))
 
 def _init_jobs_db():
     global jobs_db
@@ -82,6 +87,19 @@ def _augment_clip_with_scene(job: dict, clip: dict) -> dict:
     return out
 
 
+def _run_lipsync_serialized(**kwargs) -> dict:
+    """Executa lip sync em fila global, um por vez, com pequeno cooldown entre chamadas."""
+    print("   🔒 Aguardando fila global de lip sync...")
+    with LIPSYNC_SERIAL_LOCK:
+        print("   🔓 Iniciando lip sync (slot global liberado)")
+        result = generate_lipsync(**kwargs)
+        cooldown = max(0, LIPSYNC_COOLDOWN_SECONDS)
+        if cooldown:
+            print(f"   ⏳ Cooldown pós-lip-sync: {cooldown}s")
+            time.sleep(cooldown)
+        return result
+
+
 def _normalize_lipsync_error(raw_error: str, last_resort: bool = False) -> tuple[str, str, bool, str]:
     raw = (raw_error or "").lower()
     face_related = any(token in raw for token in [
@@ -131,30 +149,30 @@ def _normalize_lipsync_error(raw_error: str, last_resort: bool = False) -> tuple
         )
     if busy_related:
         return (
-            "Serviço externo indisponível/ocupado — regenere esta cena para tentar novamente com um novo clipe.",
-            "regen_scene",
-            True,
+            "Serviço externo indisponível/ocupado — tente novamente o lip sync mais tarde. Não é necessário regenerar a cena agora.",
+            "busy",
+            False,
             "provider_busy",
         )
     if timeout_related:
         return (
-            "Tempo esgotado no serviço externo — regenere esta cena para nova tentativa.",
-            "regen_scene",
-            True,
+            "Tempo esgotado no serviço externo — tente novamente o lip sync mais tarde. Não é necessário regenerar a cena agora.",
+            "timeout",
+            False,
             "provider_timeout",
         )
     if proxy_related:
         return (
-            "Falha transitória de rede do serviço externo — regenere esta cena para tentar novamente.",
-            "regen_scene",
-            True,
+            "Falha transitória de rede do serviço externo — tente novamente o lip sync mais tarde. Não é necessário regenerar a cena agora.",
+            "proxy",
+            False,
             "provider_network",
         )
     if deleted_related:
         return (
-            "O serviço externo descartou a task durante o processamento — regenere esta cena.",
-            "regen_scene",
-            True,
+            "O serviço externo descartou a task durante o processamento — tente novamente o lip sync mais tarde antes de regenerar a cena.",
+            "deleted",
+            False,
             "provider_deleted",
         )
     if cancelled_related:
@@ -749,6 +767,7 @@ def process_regen_lipsync(job_id: str, scene_number: int, clip: dict,
                            audio_path: str, vocals_path: str, model: str):
     """Refaz lip sync de uma única cena e atualiza lipsync_clips."""
     try:
+        job = jobs_db.get(job_id, {})
         face_video_url = clip.get("kling_url") or clip.get("video_url")
         origin_task_id = clip.get("task_id", "")
         clip_job_id    = f"{job_id}_scene{scene_number:03d}"
@@ -760,7 +779,7 @@ def process_regen_lipsync(job_id: str, scene_number: int, clip: dict,
             _preextract_vocals(job_id)
             vocals_path = jobs_db.get(job_id, {}).get("vocals_path")
 
-        result = generate_lipsync(
+        result = _run_lipsync_serialized(
             face_source=face_video_url, audio_source=audio_path,
             job_id=clip_job_id, model=model,
             preextracted_vocals=vocals_path, origin_task_id=origin_task_id,
@@ -859,7 +878,7 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
                     "video_url": clip.get("video_url"), "lipsync_error": "cancelled", **_scene_meta(job, scene_num)}
         origin_task_id = clip.get("task_id", "")
         print(f"🎤 Lip sync clipe {scene_num}/{total}...")
-        result = generate_lipsync(
+        result = _run_lipsync_serialized(
             face_source=face_video_url, audio_source=audio_path,
             job_id=clip_job_id, model=model,
             preextracted_vocals=vocals_path, origin_task_id=origin_task_id,
@@ -880,11 +899,9 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
                 "raw_error": raw[:1000], **scene_meta}
 
     results_map = {}
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        futures = {executor.submit(_process_clip, (i, c)): i for i, c in enumerate(successful_clips)}
-        for future in as_completed(futures):
-            r = future.result()
-            results_map[r["scene_number"]] = r
+    for i, clip in enumerate(successful_clips):
+        r = _process_clip((i, clip))
+        results_map[r["scene_number"]] = r
 
     lipsync_clips = [results_map[k] for k in sorted(results_map)]
     success_count = sum(1 for c in lipsync_clips if not c.get("lipsync_error"))
