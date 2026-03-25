@@ -236,8 +236,7 @@ def generate_video_clip(
         }
 
     for attempt in range(1, max_retries + 1):
-        print(f"
-Scene {scene_number} Attempt {attempt}/{max_retries} (fal.ai)")
+        print(f"\nScene {scene_number} Attempt {attempt}/{max_retries} (fal.ai)")
         try:
             task_id, handler = create_kling_video_task(
                 image_url=public_url,
@@ -300,8 +299,7 @@ def generate_video_clips_batch(
     **kwargs
 ) -> list:
     total = len(scenes)
-    print(f"
-Generating {total} video clips via fal.ai / Kling ...")
+    print(f"\nGenerating {total} video clips via fal.ai / Kling ...")
     print(f"   Mode: {mode} | {duration}s | {aspect_ratio} | workers={FAL_KLING_MAX_WORKERS}")
 
     max_workers = max(1, min(FAL_KLING_MAX_WORKERS, total))
