@@ -1,7 +1,11 @@
 """
-🎤 ClipVox - Lip Sync Service (fal.ai / LatentSync)
+🎤 ClipVox - Lip Sync Service (fal.ai / Kling LipSync)
 Mantém a mesma interface do serviço anterior para não quebrar o restante do backend.
-Ajuste principal: normaliza TODO áudio para WAV PCM s16le mono antes do envio.
+
+Mudanças principais:
+- troca o modelo de lipsync para fal-ai/kling-video/lipsync/audio-to-video
+- normaliza o áudio final para MP3 mono, alinhado ao exemplo oficial do modelo
+- mantém upload em R2 e retorno compatível com videos.py
 """
 
 import mimetypes
@@ -15,8 +19,6 @@ import requests
 from config import (
     FAL_KEY,
     FAL_LIPSYNC_MODEL,
-    FAL_LIPSYNC_GUIDANCE_SCALE,
-    FAL_LIPSYNC_LOOP_MODE,
     FAL_REQUEST_TIMEOUT_SECONDS,
     FAL_POLL_INTERVAL_SECONDS,
     UPLOAD_DIR,
@@ -29,6 +31,20 @@ try:
     import fal_client
 except Exception:  # pragma: no cover
     fal_client = None
+
+
+KLING_LIPSYNC_ENDPOINT = "fal-ai/kling-video/lipsync/audio-to-video"
+
+
+def _resolve_endpoint() -> str:
+    candidate = (os.getenv("FAL_LIPSYNC_MODEL") or FAL_LIPSYNC_MODEL or "").strip()
+    # Se ainda estiver vindo latentsync da config antiga, força Kling LipSync.
+    if not candidate or "latentsync" in candidate.lower():
+        return KLING_LIPSYNC_ENDPOINT
+    return candidate
+
+
+RESOLVED_LIPSYNC_ENDPOINT = _resolve_endpoint()
 
 
 def _require_fal() -> None:
@@ -48,6 +64,8 @@ def _content_type_for_path(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".wav":
         return "audio/wav"
+    if ext == ".mp3":
+        return "audio/mpeg"
     if ext == ".mp4":
         return "video/mp4"
     return mimetypes.guess_type(path)[0] or "application/octet-stream"
@@ -114,32 +132,45 @@ def _ensure_local_audio(audio_source: str, job_id: str) -> str:
     return local_path
 
 
-def _normalize_audio_to_wav(audio_path: str, out_path: str, duration_seconds: Optional[float] = None) -> str:
-    """Converte/normaliza qualquer áudio para WAV PCM s16le mono.
-
-    Isso reduz bastante a chance de falha de parsing no modelo.
-    """
-    cmd = [
-        "ffmpeg", "-y", "-i", audio_path,
-    ]
+def _normalize_audio_to_mp3(audio_path: str, out_path: str, duration_seconds: Optional[float] = None) -> str:
+    """Converte/normaliza para MP3 mono CBR, alinhado ao exemplo oficial do Kling LipSync."""
+    cmd = ["ffmpeg", "-y", "-i", audio_path]
     if duration_seconds is not None:
-        cmd += ["-t", f"{max(0.5, float(duration_seconds)):.2f}"]
+        cmd += ["-t", f"{max(2.0, float(duration_seconds)):.2f}"]
     cmd += [
         "-vn",
-        "-ar", "16000",
+        "-ar", "44100",
         "-ac", "1",
-        "-c:a", "pcm_s16le",
+        "-c:a", "libmp3lame",
+        "-b:a", "128k",
         out_path,
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     if not os.path.exists(out_path) or os.path.getsize(out_path) < 2048:
-        raise RuntimeError("Áudio WAV gerado inválido ou vazio")
+        raise RuntimeError("Áudio MP3 gerado inválido ou vazio")
+
+    if os.path.getsize(out_path) > 5 * 1024 * 1024:
+        # Ajuste defensivo ao limite do modelo (5 MB)
+        smaller = out_path.rsplit(".", 1)[0] + "_64k.mp3"
+        cmd2 = [
+            "ffmpeg", "-y", "-i", audio_path,
+            "-t", f"{max(2.0, float(duration_seconds or 5.0)):.2f}",
+            "-vn",
+            "-ar", "22050",
+            "-ac", "1",
+            "-c:a", "libmp3lame",
+            "-b:a", "64k",
+            smaller,
+        ]
+        subprocess.run(cmd2, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(smaller) and os.path.getsize(smaller) <= 5 * 1024 * 1024:
+            return smaller
+        raise RuntimeError("Áudio final excede 5 MB, limite do Kling LipSync")
 
     dur = _get_audio_duration(out_path)
-    if dur <= 0:
-        raise RuntimeError("Falha ao validar duração do áudio WAV")
-
+    if dur < 1.9:
+        raise RuntimeError("Duração do áudio final ficou abaixo do mínimo do Kling LipSync (2s)")
     return out_path
 
 
@@ -174,14 +205,12 @@ def _check_url_accessible(url: str, label: str) -> bool:
         return False
 
 
-def create_lipsync_task(video_url: str, audio_url: str, model: str = "latentsync", origin_task_id: str = "") -> Tuple[Optional[str], Optional[Any]]:
+def create_lipsync_task(video_url: str, audio_url: str, model: str = "kling", origin_task_id: str = "") -> Tuple[Optional[str], Optional[Any]]:
     _require_fal()
-    endpoint = FAL_LIPSYNC_MODEL
+    endpoint = RESOLVED_LIPSYNC_ENDPOINT
     arguments = {
         "video_url": video_url,
         "audio_url": audio_url,
-        "guidance_scale": FAL_LIPSYNC_GUIDANCE_SCALE,
-        "loop_mode": FAL_LIPSYNC_LOOP_MODE,
     }
     handler = fal_client.submit(endpoint, arguments=arguments)
     request_id = getattr(handler, "request_id", "")
@@ -198,16 +227,16 @@ def poll_lipsync_task(handler: Any, timeout: int = FAL_REQUEST_TIMEOUT_SECONDS) 
         elapsed = int(time.time() - start)
         if isinstance(status, getattr(fal_client, "Queued", tuple())):
             pos = getattr(status, "position", None)
-            print(f"   ⏳ lipsync fila pos={pos} ({elapsed}s)")
+            print(f"   ⏳ kling lipsync fila pos={pos} ({elapsed}s)")
         elif isinstance(status, getattr(fal_client, "InProgress", tuple())):
             logs = getattr(status, "logs", None) or []
             if logs:
                 msg = logs[-1].get("message") or str(logs[-1])
                 if msg != last_log:
-                    print(f"   ⏳ lipsync: {msg} ({elapsed}s)")
+                    print(f"   ⏳ kling lipsync: {msg} ({elapsed}s)")
                     last_log = msg
             else:
-                print(f"   ⏳ lipsync processing ({elapsed}s)")
+                print(f"   ⏳ kling lipsync processing ({elapsed}s)")
         elif isinstance(status, getattr(fal_client, "Completed", tuple())) or status_name == "COMPLETED":
             payload = handler.get()
             data = _fal_unwrap(payload)
@@ -215,7 +244,7 @@ def poll_lipsync_task(handler: Any, timeout: int = FAL_REQUEST_TIMEOUT_SECONDS) 
             url = video.get("url") if isinstance(video, dict) else None
             if url:
                 return {"success": True, "video_url": url}
-            return {"success": False, "error": "fal lipsync concluiu sem video.url"}
+            return {"success": False, "error": "Kling LipSync concluiu sem video.url"}
         elif status_name in {"FAILED", "ERROR", "CANCELLED"}:
             error_message = None
             try:
@@ -224,22 +253,23 @@ def poll_lipsync_task(handler: Any, timeout: int = FAL_REQUEST_TIMEOUT_SECONDS) 
                 error_message = data.get("error") or data.get("message")
             except Exception:
                 pass
-            return {"success": False, "error": error_message or f"fal lipsync failed: {status_name}"}
+            return {"success": False, "error": error_message or f"Kling LipSync failed: {status_name}"}
         time.sleep(FAL_POLL_INTERVAL_SECONDS)
-    return {"success": False, "error": f"fal lipsync timeout ({timeout}s)"}
+    return {"success": False, "error": f"Kling LipSync timeout ({timeout}s)"}
 
 
 def generate_lipsync(
     face_source: str,
     audio_source: str,
     job_id: str = "",
-    model: str = "latentsync",
+    model: str = "kling",
     preextracted_vocals: Optional[str] = None,
     origin_task_id: str = "",
 ) -> Dict[str, Any]:
     try:
-        print(f"🎤 Lip Sync via fal.ai ({FAL_LIPSYNC_MODEL})...")
+        print(f"🎤 Lip Sync via fal.ai ({RESOLVED_LIPSYNC_ENDPOINT})...")
         safe_job_id = job_id or "adhoc"
+
         video_local = _ensure_local_video(face_source, safe_job_id)
         video_duration = _get_video_duration(video_local)
         print(f"   ⏱️ Duração do vídeo detectada: {video_duration:.2f}s")
@@ -252,20 +282,22 @@ def generate_lipsync(
         source_audio_duration = _get_audio_duration(vocals_local)
         print(f"   🎵 Áudio fonte detectado: {source_audio_duration:.2f}s")
 
-        trimmed_wav_path = os.path.join(UPLOAD_DIR, f"{safe_job_id}_trimmed.wav")
-        _normalize_audio_to_wav(vocals_local, trimmed_wav_path, video_duration)
-        final_audio_duration = _get_audio_duration(trimmed_wav_path)
-        print(f"   ✅ Áudio normalizado para WAV PCM mono: {final_audio_duration:.2f}s")
+        trimmed_mp3_path = os.path.join(UPLOAD_DIR, f"{safe_job_id}_trimmed.mp3")
+        final_audio_path = _normalize_audio_to_mp3(vocals_local, trimmed_mp3_path, video_duration)
+        final_audio_duration = _get_audio_duration(final_audio_path)
+        print(f"   ✅ Áudio normalizado para MP3 mono: {final_audio_duration:.2f}s")
 
         video_url = face_source
         if not (isinstance(video_url, str) and video_url.startswith(("http://", "https://"))):
             video_url = _upload_file_to_r2(video_local, f"jobs/{safe_job_id}/lipsync_input.mp4")
-        audio_url = _upload_file_to_r2(trimmed_wav_path, f"audio/{safe_job_id}/trimmed.wav")
+        audio_url = _upload_file_to_r2(final_audio_path, f"audio/{safe_job_id}/trimmed.mp3")
         if not video_url or not audio_url:
             return {"success": False, "error": "Falha ao publicar arquivos no R2"}
 
-        _check_url_accessible(video_url, "Vídeo")
-        _check_url_accessible(audio_url, "Áudio WAV")
+        if not _check_url_accessible(video_url, "Vídeo"):
+            return {"success": False, "error": "Vídeo não acessível para o Kling LipSync"}
+        if not _check_url_accessible(audio_url, "Áudio MP3"):
+            return {"success": False, "error": "Áudio não acessível para o Kling LipSync"}
 
         request_id, handler = create_lipsync_task(video_url, audio_url, model=model, origin_task_id=origin_task_id)
         if not request_id or handler is None:
@@ -273,10 +305,7 @@ def generate_lipsync(
 
         result = poll_lipsync_task(handler)
         if not result.get("success"):
-            err = str(result.get("error", ""))
-            if "audio file" in err.lower() or "supported format" in err.lower() or "corrupted" in err.lower():
-                err += " | dica: o backend já converteu para WAV PCM; se persistir, teste um áudio fonte mais limpo/seco ou troque o modelo de lipsync."
-            return {"success": False, "error": err}
+            return {"success": False, "error": str(result.get("error", "Falha desconhecida no Kling LipSync"))}
 
         final_video_url = result["video_url"]
         local_out = os.path.join(UPLOAD_DIR, f"{safe_job_id}_lipsync.mp4")
@@ -288,8 +317,9 @@ def generate_lipsync(
             "provider_url": final_video_url,
             "task_id": request_id,
             "provider": "fal.ai",
-            "audio_format_sent": "wav",
+            "audio_format_sent": "mp3",
+            "model_endpoint": RESOLVED_LIPSYNC_ENDPOINT,
         }
     except Exception as e:
-        print(f"   ❌ Exceção fal lipsync: {e}")
+        print(f"   ❌ Exceção fal kling lipsync: {e}")
         return {"success": False, "error": str(e)}
