@@ -155,7 +155,7 @@ async def generate_video_clips(job_id: str, background_tasks: BackgroundTasks, m
     total_scenes = len([s for s in scenes if s.get("success", False)])
     return {
         "job_id": job_id, "status": "processing",
-        "message": f"Gerando {total_scenes} clipes de video com Kling AI...",
+        "message": f"Gerando {total_scenes} clipes de video com fal.ai / Kling...",
         "estimated_cost": f"~${total_scenes * (0.125 if mode == 'std' else 0.25):.2f}",
         "mode": mode,
     }
@@ -656,7 +656,7 @@ def process_regen_lipsync(job_id: str, scene_number: int, clip: dict,
             elif "proxy" in raw.lower() or "proxyconnect" in raw.lower():
                 msg, etype = "Erro de conexão — tente novamente mais tarde", "proxy"
             elif "service busy" in raw.lower() or "500 service" in raw.lower():
-                msg, etype = "Servidor sobrecarregado — tente mais tarde", "busy"
+                msg, etype = "Serviço de lip sync indisponível — tente novamente mais tarde", "busy"
             elif "cancelled" in raw.lower():
                 msg, etype = "Cancelado pelo usuário", "cancelled"
             else:
@@ -750,7 +750,7 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
         elif "proxy" in raw.lower() or "proxyconnect" in raw.lower():
             msg, etype = "Erro de conexão — tente regenerar o lip sync desta cena", "proxy"
         elif "service busy" in raw.lower() or "500 service" in raw.lower():
-            msg, etype = "Servidor sobrecarregado — tente regenerar esta cena", "busy"
+            msg, etype = "Serviço de lip sync indisponível — tente novamente mais tarde", "busy"
         elif "cancelled" in raw.lower():
             msg, etype = "Cancelado pelo usuário", "cancelled"
         else:
