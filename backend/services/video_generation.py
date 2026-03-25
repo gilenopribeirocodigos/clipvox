@@ -1,67 +1,99 @@
 """
-🎬 ClipVox - Video Generation Service (Nano Banana Pro via PiAPI)
+🎬 ClipVox - Video Generation Service (Nano Banana 2 via fal.ai)
 ────────────────────────────────────────────────────────────────────
-Sem referência  → Nano Banana Pro text-to-image
-Com referência  → Nano Banana Pro + image_urls (face consistency)
-                  Mantém o rosto da pessoa em TODAS as cenas
-
-Auth: X-API-Key (PiAPI)
-Endpoint: api.piapi.ai/api/v1/task
-Model: gemini | task_type: nano-banana-pro
-
-🆕 FEATURES:
-- ✅ Aspect Ratio (16:9, 9:16, 1:1, 4:3)
-- ✅ Visual Styles (10+ estilos)
-- ✅ Reference Image → face consistency via image_urls (até 3 fotos)
-- ✅ $0.105/imagem (Nano Banana Pro)
-- ✅ Save progressivo a cada 5 cenas no Supabase
-- ✅ Cancelamento antes de cada chamada de API
+Sem referência  → fal-ai/nano-banana-2 (text-to-image)
+Com referência  → fal-ai/nano-banana-2/edit (consistency / image editing)
+Mantém a interface atual do backend para não quebrar o restante do sistema.
 """
 
+import mimetypes
 import os
-import base64
 import time
+from typing import Optional, List, Dict, Any
+from urllib.parse import urlparse
+
 import requests
-from typing import Optional
 from PIL import Image
 
 from config import (
+    FAL_KEY,
+    FAL_NANO_BANANA_MODEL,
+    FAL_NANO_BANANA_EDIT_MODEL,
+    FAL_REQUEST_TIMEOUT_SECONDS,
+    FAL_POLL_INTERVAL_SECONDS,
     UPLOAD_DIR,
     VISUAL_STYLES,
     R2_BUCKET_NAME,
     R2_PUBLIC_URL,
-    get_r2_client
+    get_r2_client,
 )
 
-# ── Cache de jobs para checagem de cancelamento e save progressivo ────────────
-# Referência ao jobs_db do videos.py injetada via set_jobs_cache()
+try:
+    import fal_client
+except Exception:  # pragma: no cover
+    fal_client = None
+
 jobs_cache: dict = {}
 
+
 def set_jobs_cache(db: dict):
-    """Injeta referência ao jobs_db para checar cancelamentos sem importação circular."""
     global jobs_cache
     jobs_cache = db
 
 
-# ── PiAPI ────────────────────────────────────────────────────────────────────
-PIAPI_KEY      = os.getenv("PIAPI_API_KEY", "")
-PIAPI_BASE_URL = "https://api.piapi.ai/api/v1/task"
-
-# ── imgbb (para hospedar imagem de referência) ────────────────────────────────
-IMGBB_KEY = os.getenv("IMGBB_API_KEY", "")
-
-# ── Aspect ratio ──────────────────────────────────────────────────────────────
-NB_ASPECT_RATIO = {
-    "16:9": "16:9",
-    "9:16": "9:16",
-    "1:1":  "1:1",
-    "4:3":  "4:3",
-}
+def _require_fal() -> None:
+    if not FAL_KEY:
+        raise RuntimeError("FAL_KEY não configurada")
+    if fal_client is None:
+        raise RuntimeError("fal-client não instalado. Adicione fal-client ao requirements.txt")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# CLOUDFLARE R2 UPLOAD
-# ══════════════════════════════════════════════════════════════════════════════
+def _fal_unwrap(result: Any) -> Dict[str, Any]:
+    if isinstance(result, dict) and isinstance(result.get("data"), dict):
+        return result["data"]
+    return result if isinstance(result, dict) else {}
+
+
+def _fal_submit_and_wait(endpoint: str, arguments: Dict[str, Any], timeout_s: int = FAL_REQUEST_TIMEOUT_SECONDS) -> Dict[str, Any]:
+    _require_fal()
+    start = time.time()
+    handler = fal_client.submit(endpoint, arguments=arguments)
+    request_id = getattr(handler, "request_id", "")
+    print(f"   ✅ fal task criada: {request_id} | endpoint={endpoint}")
+    last_log = None
+
+    while time.time() - start < timeout_s:
+        status = handler.status(with_logs=True)
+        status_name = getattr(status, "status", status.__class__.__name__).upper()
+
+        if isinstance(status, getattr(fal_client, "Queued", tuple())):
+            pos = getattr(status, "position", None)
+            print(f"   ⏳ fila fal: {status_name} pos={pos}")
+        elif isinstance(status, getattr(fal_client, "InProgress", tuple())):
+            logs = getattr(status, "logs", None) or []
+            if logs:
+                msg = logs[-1].get("message") or str(logs[-1])
+                if msg != last_log:
+                    print(f"   ⏳ fal: {msg}")
+                    last_log = msg
+            else:
+                print(f"   ⏳ fal: {status_name}")
+        elif isinstance(status, getattr(fal_client, "Completed", tuple())) or status_name == "COMPLETED":
+            payload = handler.get()
+            data = _fal_unwrap(payload)
+            return {"success": True, "request_id": request_id, "result": data}
+        elif status_name in {"FAILED", "ERROR", "CANCELLED"}:
+            raise RuntimeError(f"fal request {request_id} terminou com status {status_name}")
+
+        time.sleep(FAL_POLL_INTERVAL_SECONDS)
+
+    raise TimeoutError(f"fal timeout ({timeout_s}s) endpoint={endpoint} request_id={request_id}")
+
+
+def _content_type_for_path(path: str) -> str:
+    return mimetypes.guess_type(path)[0] or "application/octet-stream"
+
+
 def upload_to_r2(local_path: str, r2_key: str) -> Optional[str]:
     try:
         r2_client = get_r2_client()
@@ -72,202 +104,135 @@ def upload_to_r2(local_path: str, r2_key: str) -> Optional[str]:
                 Bucket=R2_BUCKET_NAME,
                 Key=r2_key,
                 Body=f,
-                ContentType='image/jpeg'
+                ContentType=_content_type_for_path(local_path)
             )
-        public_url = f"{R2_PUBLIC_URL}/{r2_key}"
-        print(f"✅ Uploaded to R2: {public_url}")
+        public_url = f"{R2_PUBLIC_URL}/{r2_key}" if R2_PUBLIC_URL else None
+        if public_url:
+            print(f"✅ Uploaded to R2: {public_url}")
         return public_url
     except Exception as e:
         print(f"❌ R2 upload error: {e}")
         return None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# IMGBB UPLOAD (para hospedar imagem de referência como URL pública)
-# ══════════════════════════════════════════════════════════════════════════════
-def _upload_reference_to_imgbb(image_path: str) -> Optional[str]:
-    """Faz upload da imagem de referência para imgbb → URL pública para PiAPI."""
-    if not IMGBB_KEY:
-        print("   ⚠️ IMGBB_API_KEY não configurada — sem referência de rosto")
-        return None
+def _download_file(url: str, out_path: str, timeout: int = 180) -> bool:
     try:
-        with open(image_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("utf-8")
-        resp = requests.post(
-            f"https://api.imgbb.com/1/upload?key={IMGBB_KEY}",
-            data={"image": b64, "name": f"clipvox_ref_{int(time.time())}"},
-            timeout=60
-        )
-        if resp.status_code == 200:
-            url = resp.json().get("data", {}).get("url")
-            if url:
-                time.sleep(2)  # CDN propagation
-                print(f"   ✅ imgbb ref: {url}")
-                return url
-        print(f"   ❌ imgbb falhou: HTTP {resp.status_code}")
-        return None
+        with requests.get(url, timeout=timeout, stream=True) as resp:
+            if resp.status_code != 200:
+                print(f"   ❌ download fal HTTP {resp.status_code}")
+                return False
+            with open(out_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        return True
     except Exception as e:
-        print(f"   ❌ imgbb erro: {e}")
-        return None
+        print(f"   ❌ download fal error: {e}")
+        return False
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# NANO BANANA PRO — IMAGE GENERATION VIA PIAPI
-# ══════════════════════════════════════════════════════════════════════════════
-def _generate_nano_banana_image(
+def _ensure_public_url(local_path: str, job_id: str, tag: str) -> Optional[str]:
+    ext = os.path.splitext(local_path)[1].lower() or ".jpg"
+    key = f"jobs/{job_id or 'adhoc'}/refs/{tag}{ext}"
+    return upload_to_r2(local_path, key)
+
+
+def _resolution_map(resolution: str) -> str:
+    return {
+        "720p": "1K",
+        "1080p": "2K",
+    }.get((resolution or "720p").lower(), "1K")
+
+
+def _style_prefix(style: str) -> str:
+    return (VISUAL_STYLES.get(style) or VISUAL_STYLES["realistic"])["prefix"]
+
+
+def _generate_fal_image(
     prompt: str,
     scene_number: int,
-    style: str = "realistic",
-    aspect_ratio: str = "16:9",
-    reference_image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None,  # ✅ múltiplas referências
+    style: str,
+    aspect_ratio: str,
+    resolution: str,
+    reference_image_urls: Optional[List[str]] = None,
 ) -> Optional[str]:
-    """
-    Chama Nano Banana Pro via PiAPI.
-    COM referência → image_urls = [url1, url2, ...] (mantém rosto)
-    SEM referência → text-to-image puro
-    Retorna URL da imagem gerada, ou None se falhar.
-    """
-    if not PIAPI_KEY:
-        print("   ❌ PIAPI_API_KEY não configurada")
-        return None
-
-    style_config = VISUAL_STYLES.get(style, VISUAL_STYLES["realistic"])
-    style_prefix = style_config.get("prefix", "")
-    full_prompt  = f"{style_prefix}, {prompt}" if style_prefix else prompt
-    nb_aspect    = NB_ASPECT_RATIO.get(aspect_ratio, "16:9")
-
-    payload_input = {
-        "prompt":       full_prompt[:2000],
-        "aspect_ratio": nb_aspect,
+    styled_prompt = f"{_style_prefix(style)}. {prompt}"
+    endpoint = FAL_NANO_BANANA_EDIT_MODEL if reference_image_urls else FAL_NANO_BANANA_MODEL
+    args: Dict[str, Any] = {
+        "prompt": styled_prompt,
+        "num_images": 1,
+        "aspect_ratio": aspect_ratio if aspect_ratio in {"16:9", "9:16", "1:1", "4:3"} else "auto",
+        "output_format": "jpeg",
+        "resolution": _resolution_map(resolution),
+        "limit_generations": True,
+        "safety_tolerance": "4",
     }
-
-    # ✅ Suporte a múltiplas referências (até 3 fotos do artista)
-    all_ref_urls = reference_image_urls or ([reference_image_url] if reference_image_url else [])
-    if all_ref_urls:
-        print(f"   🎭 Mode: Nano Banana Pro + {len(all_ref_urls)} imagem(ns) de referência")
-        payload_input["image_urls"] = all_ref_urls
+    if reference_image_urls:
+        args["image_urls"] = reference_image_urls[:3]
+        print(f"   🎭 fal Nano Banana edit com {len(reference_image_urls[:3])} referência(s)")
     else:
-        print(f"   🎨 Mode: Nano Banana Pro text-to-image")
-
-    payload = {
-        "model":     "gemini",
-        "task_type": "nano-banana-pro",
-        "input":     payload_input,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "X-API-Key":    PIAPI_KEY,
-    }
-
-    print(f"   📐 {nb_aspect} | {style}")
+        print("   🎭 fal Nano Banana text-to-image")
 
     try:
-        resp = requests.post(PIAPI_BASE_URL, headers=headers, json=payload, timeout=30)
-        print(f"   📥 HTTP {resp.status_code}: {resp.text[:300]}")
-        data    = resp.json()
-        task_id = (
-            data.get("data", {}).get("task_id")
-            or data.get("task_id")
-        )
-        if not task_id:
-            print(f"   ❌ task_id não encontrado: {data}")
-            return None
-
-        print(f"   ✅ Task criada: {task_id}")
-
-        poll_headers = {"X-API-Key": PIAPI_KEY}
-        for elapsed in range(10, 301, 10):
-            time.sleep(10)
-            try:
-                r  = requests.get(f"{PIAPI_BASE_URL}/{task_id}", headers=poll_headers, timeout=15)
-                td = r.json()
-                status = (
-                    td.get("data", {}).get("status")
-                    or td.get("status", "")
-                )
-                print(f"   ⏳ Cena {scene_number} — {status} ({elapsed}s)")
-
-                if status in ("completed", "succeed", "success"):
-                    output  = td.get("data", {}).get("output", {}) or td.get("output", {})
-                    img_url = (
-                        (output.get("image_urls") or [None])[0]
-                        or output.get("image_url")
-                        or output.get("url")
-                        or (output.get("images") or [{}])[0].get("url")
-                        or (td.get("data", {}).get("images") or [{}])[0].get("url")
-                    )
-                    if img_url:
-                        print(f"   ✅ Imagem pronta: {img_url[:80]}")
-                        return img_url
-                    print(f"   ❌ Nenhuma imagem no resultado: {td}")
-                    return None
-
-                elif status in ("failed", "error"):
-                    error_msg = (
-                        td.get("data", {}).get("error", {}).get("message", "")
-                        or str(td.get("error", ""))
-                    )
-                    print(f"   ❌ Task falhou: {error_msg}")
-                    return None
-
-            except Exception as e:
-                print(f"   ⚠️ Polling erro: {e}")
-
-        print(f"   ❌ Timeout (300s) — Cena {scene_number}")
+        res = _fal_submit_and_wait(endpoint, args)
+        data = res.get("result", {})
+        images = data.get("images") or []
+        if images and images[0].get("url"):
+            return images[0]["url"]
+        print(f"   ❌ fal imagem sem URL retornada")
         return None
-
     except Exception as e:
-        print(f"   ❌ Exceção: {e}")
-        import traceback; traceback.print_exc()
+        print(f"   ❌ fal geração de imagem falhou: {e}")
         return None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# DOWNLOAD IMAGEM + UPLOAD R2
-# ══════════════════════════════════════════════════════════════════════════════
-def _download_and_upload(img_url, scene_number, job_id, aspect_ratio, resolution, mode):
-    try:
-        r = requests.get(img_url, timeout=60)
-        if r.status_code != 200:
-            return _generate_placeholder_image(scene_number, "")
-        filename   = f"scene_{scene_number:03d}.jpg"
-        local_path = os.path.join(UPLOAD_DIR, filename)
-        with open(local_path, "wb") as f:
-            f.write(r.content)
-        r2_key = f"jobs/{job_id}/{filename}" if job_id else f"scenes/{filename}"
-        r2_url = upload_to_r2(local_path, r2_key)
-        print(f"✅ Scene {scene_number} done")
-        return {
-            "success": True, "scene_number": scene_number,
-            "image_path": local_path, "image_url": r2_url or img_url,
-            "r2_url": r2_url, "prompt_used": "", "mode": mode,
-            "aspect_ratio": aspect_ratio, "resolution": resolution,
-        }
-    except Exception as e:
-        print(f"❌ Download/upload error scene {scene_number}: {e}")
-        return _generate_placeholder_image(scene_number, "")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PLACEHOLDER
-# ══════════════════════════════════════════════════════════════════════════════
 def _generate_placeholder_image(scene_number: int, prompt: str) -> dict:
-    img        = Image.new('RGB', (1280, 720), color=(40, 40, 50))
-    filename   = f"scene_{scene_number:03d}_placeholder.jpg"
+    img = Image.new('RGB', (1280, 720), color=(40, 40, 50))
+    filename = f"scene_{scene_number:03d}_placeholder.jpg"
     local_path = os.path.join(UPLOAD_DIR, filename)
     img.save(local_path)
     return {
-        "success": False, "scene_number": scene_number,
-        "image_path": local_path, "image_url": f"/api/files/{filename}",
-        "r2_url": None, "prompt_used": prompt[:100],
-        "mode": "placeholder", "aspect_ratio": "16:9", "resolution": "720p",
+        "success": False,
+        "scene_number": scene_number,
+        "image_path": local_path,
+        "image_url": f"/api/files/{filename}",
+        "r2_url": None,
+        "prompt_used": prompt[:100],
+        "prompt": prompt,
+        "mode": "placeholder",
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+        "provider": "fal.ai",
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# GENERATE SCENE IMAGE
-# ══════════════════════════════════════════════════════════════════════════════
+def _download_and_upload(image_url: str, scene_number: int, job_id: str, aspect_ratio: str, resolution: str, mode: str, prompt: str) -> dict:
+    try:
+        filename = f"scene_{scene_number:03d}.jpg"
+        local_path = os.path.join(UPLOAD_DIR, f"{job_id}_{filename}" if job_id else filename)
+        if not _download_file(image_url, local_path, timeout=180):
+            return _generate_placeholder_image(scene_number, prompt)
+        r2_key = f"jobs/{job_id or 'adhoc'}/scene_{scene_number:03d}.jpg"
+        r2_url = upload_to_r2(local_path, r2_key)
+        print(f"✅ Scene {scene_number} done")
+        return {
+            "success": True,
+            "scene_number": scene_number,
+            "image_path": local_path,
+            "image_url": r2_url or image_url,
+            "r2_url": r2_url,
+            "prompt_used": prompt,
+            "prompt": prompt,
+            "mode": mode,
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+            "provider": "fal.ai",
+        }
+    except Exception as e:
+        print(f"❌ download/upload error scene {scene_number}: {e}")
+        return _generate_placeholder_image(scene_number, prompt)
+
+
 def generate_scene_image(
     prompt: str,
     scene_number: int,
@@ -279,31 +244,33 @@ def generate_scene_image(
     reference_imgbb_urls: Optional[list] = None,
     job_id: str = ""
 ) -> dict:
-    print(f"\n🎨 Generating scene {scene_number} [{aspect_ratio}, {resolution}, {style}]")
+    print(f"
+🎨 Generating scene {scene_number} [{aspect_ratio}, {resolution}, {style}] via fal.ai")
 
-    ref_urls = reference_imgbb_urls or []
+    ref_urls = list(reference_imgbb_urls or [])
     if not ref_urls and reference_imgbb_url:
         ref_urls = [reference_imgbb_url]
     elif not ref_urls and reference_image_path and os.path.exists(reference_image_path):
-        url = _upload_reference_to_imgbb(reference_image_path)
-        if url: ref_urls = [url]
+        url = _ensure_public_url(reference_image_path, job_id or f"scene{scene_number}", f"ref_{scene_number:03d}")
+        if url:
+            ref_urls = [url]
 
-    nb_url = _generate_nano_banana_image(
-        prompt=prompt, scene_number=scene_number, style=style,
+    img_url = _generate_fal_image(
+        prompt=prompt,
+        scene_number=scene_number,
+        style=style,
         aspect_ratio=aspect_ratio,
+        resolution=resolution,
         reference_image_urls=ref_urls if ref_urls else None,
     )
-    if not nb_url:
-        print(f"   ⚠️ Nano Banana falhou — usando placeholder")
+    if not img_url:
+        print("   ⚠️ fal Nano Banana falhou — usando placeholder")
         return _generate_placeholder_image(scene_number, prompt)
 
-    mode = "nano-banana-face-ref" if ref_urls else "nano-banana-text2image"
-    return _download_and_upload(nb_url, scene_number, job_id, aspect_ratio, resolution, mode)
+    mode = "fal-nano-banana-edit" if ref_urls else "fal-nano-banana-text2image"
+    return _download_and_upload(img_url, scene_number, job_id, aspect_ratio, resolution, mode, prompt)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# GENERATE SCENES BATCH
-# ══════════════════════════════════════════════════════════════════════════════
 def generate_scenes_batch(
     scenes: list,
     style: str = "realistic",
@@ -313,49 +280,38 @@ def generate_scenes_batch(
     reference_image_paths: Optional[list] = None,
     job_id: str = ""
 ) -> list:
-    """
-    Gera imagens para múltiplas cenas via Nano Banana Pro (PiAPI).
-    ✅ Save progressivo a cada 5 cenas no Supabase
-    ✅ Checa cancelamento antes de cada chamada
-    ✅ Suporta até 3 imagens de referência
-    """
-    results          = []
+    results = []
     successful_count = 0
 
-    print(f"\n🎨 Generating {len(scenes)} scene images via Nano Banana Pro (PiAPI)...")
+    print(f"
+🎨 Generating {len(scenes)} scene images via fal.ai / Nano Banana...")
     print(f"   Style:        {style}")
     print(f"   Aspect Ratio: {aspect_ratio}")
     print(f"   Resolution:   {resolution}")
 
-    # Montar lista de paths de referência
     all_ref_paths = reference_image_paths or []
     if not all_ref_paths and reference_image_path:
         all_ref_paths = [reference_image_path]
     all_ref_paths = [p for p in all_ref_paths if p and os.path.exists(p)]
 
-    # Hospedar referências UMA vez para todas as cenas
-    cached_ref_urls = []
+    cached_ref_urls: List[str] = []
     if all_ref_paths:
         print(f"   🎭 {len(all_ref_paths)} imagem(ns) de referência")
         for i, path in enumerate(all_ref_paths[:3]):
-            print(f"   📤 Uploading ref {i+1}: {os.path.basename(path)}")
-            url = _upload_reference_to_imgbb(path)
+            url = _ensure_public_url(path, job_id or 'adhoc', f"ref_{i+1}")
             if url:
                 cached_ref_urls.append(url)
-                print(f"   ✅ Ref {i+1} cached")
+                print(f"   ✅ Ref {i+1} cached via R2")
             else:
                 print(f"   ⚠️ Ref {i+1} falhou")
         if not cached_ref_urls:
-            print(f"   ⚠️ Nenhuma referência — usando text-to-image")
-    else:
-        print(f"   Mode: Nano Banana Pro — text-to-image")
+            print("   ⚠️ Nenhuma referência pública disponível — usando text-to-image")
 
     for scene in scenes:
-        # ✅ Checa cancelamento antes de gastar créditos no Nano Banana
-        _job_state = jobs_cache.get(job_id, {}) if job_id else {}
-        if _job_state.get("cancelled"):
+        state = jobs_cache.get(job_id, {}) if job_id else {}
+        if state.get("cancelled"):
             print(f"🛑 Geração cancelada — cena {scene['scene_number']}")
-            results.append(_generate_placeholder_image(scene["scene_number"], scene["prompt"]))
+            results.append(_generate_placeholder_image(scene["scene_number"], scene.get("prompt", "")))
             continue
 
         result = generate_scene_image(
@@ -366,34 +322,25 @@ def generate_scenes_batch(
             resolution=resolution,
             reference_image_path=None,
             reference_imgbb_urls=cached_ref_urls if cached_ref_urls else None,
-            job_id=job_id
+            job_id=job_id,
         )
-
         if result["success"]:
             successful_count += 1
         results.append(result)
 
-        # ✅ Save progressivo a cada 5 cenas — sobrevive a crashes
         if job_id and len(results) % 5 == 0:
             try:
                 from services.job_store import save_job
-                _job = jobs_cache.get(job_id, {})
-                if _job:
-                    _job["scenes"] = results[:]
-                    save_job(job_id, _job)
-                    print(f"💾 Progresso salvo: {len(results)}/{len(scenes)} cenas — job {job_id[:8]}")
-            except Exception as _se:
-                print(f"⚠️ Save progressivo falhou: {_se}")
+                job = jobs_cache.get(job_id, {})
+                # mantém prompts já prontos no estado do job
+                job["scene_images"] = results
+                save_job(job_id, job)
+            except Exception as exc:
+                print(f"⚠️ Save cenas falhou: {exc}")
 
-        if scene != scenes[-1]:
-            time.sleep(3)
-
-    print(f"\n✅ Generated {successful_count}/{len(scenes)} scenes successfully")
+    print(f"✅ Generated {successful_count}/{len(scenes)} scenes successfully")
     return results
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Compatibilidade com código antigo
-# ══════════════════════════════════════════════════════════════════════════════
 def upload_to_r2_compat(local_path: str, r2_key: str) -> Optional[str]:
     return upload_to_r2(local_path, r2_key)
