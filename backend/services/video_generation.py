@@ -244,8 +244,7 @@ def generate_scene_image(
     reference_imgbb_urls: Optional[list] = None,
     job_id: str = ""
 ) -> dict:
-    print(f"
-🎨 Generating scene {scene_number} [{aspect_ratio}, {resolution}, {style}] via fal.ai")
+    print(f"\n🎨 Generating scene {scene_number} [{aspect_ratio}, {resolution}, {style}] via fal.ai")
 
     ref_urls = list(reference_imgbb_urls or [])
     if not ref_urls and reference_imgbb_url:
@@ -283,8 +282,7 @@ def generate_scenes_batch(
     results = []
     successful_count = 0
 
-    print(f"
-🎨 Generating {len(scenes)} scene images via fal.ai / Nano Banana...")
+    print(f"\n🎨 Generating {len(scenes)} scene images via fal.ai / Nano Banana...")
     print(f"   Style:        {style}")
     print(f"   Aspect Ratio: {aspect_ratio}")
     print(f"   Resolution:   {resolution}")
