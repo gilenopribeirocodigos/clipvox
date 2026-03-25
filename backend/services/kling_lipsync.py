@@ -1,6 +1,7 @@
 """
 🎤 ClipVox - Lip Sync Service (fal.ai / LatentSync)
 Mantém a mesma interface do serviço anterior para não quebrar o restante do backend.
+Ajuste principal: normaliza TODO áudio para WAV PCM s16le mono antes do envio.
 """
 
 import mimetypes
@@ -44,39 +45,39 @@ def _fal_unwrap(result: Any) -> Dict[str, Any]:
 
 
 def _content_type_for_path(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".wav":
+        return "audio/wav"
+    if ext == ".mp4":
+        return "video/mp4"
     return mimetypes.guess_type(path)[0] or "application/octet-stream"
+
+
+def _ffprobe_duration(path: str) -> float:
+    out = subprocess.check_output(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            path,
+        ],
+        text=True,
+    ).strip()
+    return float(out)
 
 
 def _get_video_duration(video_path: str) -> float:
     try:
-        out = subprocess.check_output([
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", video_path
-        ], text=True).strip()
-        return float(out)
+        return _ffprobe_duration(video_path)
     except Exception:
         return 5.0
 
 
-def _convert_to_mp3(audio_path: str, job_id: str) -> str:
-    if audio_path.lower().endswith(".mp3"):
-        return audio_path
-    mp3_path = os.path.join(UPLOAD_DIR, f"{job_id}_audio.mp3")
-    subprocess.run([
-        "ffmpeg", "-y", "-i", audio_path,
-        "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k", mp3_path
-    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return mp3_path
-
-
-def _trim_audio(audio_path: str, out_path: str, duration_seconds: float) -> str:
-    duration_seconds = max(0.5, float(duration_seconds))
-    subprocess.run([
-        "ffmpeg", "-y", "-i", audio_path,
-        "-t", f"{duration_seconds:.2f}",
-        "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k", out_path
-    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return out_path
+def _get_audio_duration(audio_path: str) -> float:
+    try:
+        return _ffprobe_duration(audio_path)
+    except Exception:
+        return 0.0
 
 
 def _download_to_local(url: str, out_path: str, timeout: int = 300) -> bool:
@@ -101,6 +102,45 @@ def _ensure_local_video(face_source: str, job_id: str) -> str:
     if not _download_to_local(face_source, local_path, timeout=300):
         raise RuntimeError("Falha ao baixar o vídeo de entrada para lipsync")
     return local_path
+
+
+def _ensure_local_audio(audio_source: str, job_id: str) -> str:
+    if os.path.exists(str(audio_source)):
+        return str(audio_source)
+    ext = os.path.splitext(str(audio_source))[1].lower() or ".bin"
+    local_path = os.path.join(UPLOAD_DIR, f"{job_id}_audio_src{ext}")
+    if not _download_to_local(audio_source, local_path, timeout=300):
+        raise RuntimeError("Falha ao baixar o áudio de entrada para lipsync")
+    return local_path
+
+
+def _normalize_audio_to_wav(audio_path: str, out_path: str, duration_seconds: Optional[float] = None) -> str:
+    """Converte/normaliza qualquer áudio para WAV PCM s16le mono.
+
+    Isso reduz bastante a chance de falha de parsing no modelo.
+    """
+    cmd = [
+        "ffmpeg", "-y", "-i", audio_path,
+    ]
+    if duration_seconds is not None:
+        cmd += ["-t", f"{max(0.5, float(duration_seconds)):.2f}"]
+    cmd += [
+        "-vn",
+        "-ar", "16000",
+        "-ac", "1",
+        "-c:a", "pcm_s16le",
+        out_path,
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if not os.path.exists(out_path) or os.path.getsize(out_path) < 2048:
+        raise RuntimeError("Áudio WAV gerado inválido ou vazio")
+
+    dur = _get_audio_duration(out_path)
+    if dur <= 0:
+        raise RuntimeError("Falha ao validar duração do áudio WAV")
+
+    return out_path
 
 
 def _upload_file_to_r2(local_path: str, key: str) -> Optional[str]:
@@ -177,7 +217,14 @@ def poll_lipsync_task(handler: Any, timeout: int = FAL_REQUEST_TIMEOUT_SECONDS) 
                 return {"success": True, "video_url": url}
             return {"success": False, "error": "fal lipsync concluiu sem video.url"}
         elif status_name in {"FAILED", "ERROR", "CANCELLED"}:
-            return {"success": False, "error": f"fal lipsync failed: {status_name}"}
+            error_message = None
+            try:
+                payload = handler.get()
+                data = _fal_unwrap(payload)
+                error_message = data.get("error") or data.get("message")
+            except Exception:
+                pass
+            return {"success": False, "error": error_message or f"fal lipsync failed: {status_name}"}
         time.sleep(FAL_POLL_INTERVAL_SECONDS)
     return {"success": False, "error": f"fal lipsync timeout ({timeout}s)"}
 
@@ -192,31 +239,33 @@ def generate_lipsync(
 ) -> Dict[str, Any]:
     try:
         print(f"🎤 Lip Sync via fal.ai ({FAL_LIPSYNC_MODEL})...")
-        video_local = _ensure_local_video(face_source, job_id or 'adhoc')
+        safe_job_id = job_id or "adhoc"
+        video_local = _ensure_local_video(face_source, safe_job_id)
         video_duration = _get_video_duration(video_local)
         print(f"   ⏱️ Duração do vídeo detectada: {video_duration:.2f}s")
 
-        vocals_path = preextracted_vocals or audio_source
-        if not vocals_path or not os.path.exists(str(vocals_path)):
-            if os.path.exists(str(audio_source)):
-                vocals_path = str(audio_source)
-            else:
-                raise RuntimeError("Áudio/vocals não disponível localmente para o lipsync")
+        vocals_source = preextracted_vocals or audio_source
+        if not vocals_source:
+            raise RuntimeError("Áudio/vocals não informado para o lipsync")
 
-        mp3_path = _convert_to_mp3(vocals_path, job_id or 'adhoc')
-        trimmed_path = os.path.join(UPLOAD_DIR, f"{job_id}_trimmed.mp3")
-        _trim_audio(mp3_path, trimmed_path, video_duration)
-        print(f"   ✅ Áudio trimado para {video_duration:.2f}s")
+        vocals_local = _ensure_local_audio(vocals_source, safe_job_id)
+        source_audio_duration = _get_audio_duration(vocals_local)
+        print(f"   🎵 Áudio fonte detectado: {source_audio_duration:.2f}s")
+
+        trimmed_wav_path = os.path.join(UPLOAD_DIR, f"{safe_job_id}_trimmed.wav")
+        _normalize_audio_to_wav(vocals_local, trimmed_wav_path, video_duration)
+        final_audio_duration = _get_audio_duration(trimmed_wav_path)
+        print(f"   ✅ Áudio normalizado para WAV PCM mono: {final_audio_duration:.2f}s")
 
         video_url = face_source
         if not (isinstance(video_url, str) and video_url.startswith(("http://", "https://"))):
-            video_url = _upload_file_to_r2(video_local, f"jobs/{job_id or 'adhoc'}/lipsync_input.mp4")
-        audio_url = _upload_file_to_r2(trimmed_path, f"audio/{job_id or 'adhoc'}/trimmed.mp3")
+            video_url = _upload_file_to_r2(video_local, f"jobs/{safe_job_id}/lipsync_input.mp4")
+        audio_url = _upload_file_to_r2(trimmed_wav_path, f"audio/{safe_job_id}/trimmed.wav")
         if not video_url or not audio_url:
             return {"success": False, "error": "Falha ao publicar arquivos no R2"}
 
         _check_url_accessible(video_url, "Vídeo")
-        _check_url_accessible(audio_url, "Áudio")
+        _check_url_accessible(audio_url, "Áudio WAV")
 
         request_id, handler = create_lipsync_task(video_url, audio_url, model=model, origin_task_id=origin_task_id)
         if not request_id or handler is None:
@@ -224,18 +273,22 @@ def generate_lipsync(
 
         result = poll_lipsync_task(handler)
         if not result.get("success"):
-            return result
+            err = str(result.get("error", ""))
+            if "audio file" in err.lower() or "supported format" in err.lower() or "corrupted" in err.lower():
+                err += " | dica: o backend já converteu para WAV PCM; se persistir, teste um áudio fonte mais limpo/seco ou troque o modelo de lipsync."
+            return {"success": False, "error": err}
 
         final_video_url = result["video_url"]
-        local_out = os.path.join(UPLOAD_DIR, f"{job_id}_lipsync.mp4")
+        local_out = os.path.join(UPLOAD_DIR, f"{safe_job_id}_lipsync.mp4")
         _download_to_local(final_video_url, local_out, timeout=600)
-        r2_url = _upload_file_to_r2(local_out, f"lipsync/{job_id or 'adhoc'}/lipsync.mp4") if os.path.exists(local_out) else None
+        r2_url = _upload_file_to_r2(local_out, f"lipsync/{safe_job_id}/lipsync.mp4") if os.path.exists(local_out) else None
         return {
             "success": True,
             "video_url": r2_url or final_video_url,
             "provider_url": final_video_url,
             "task_id": request_id,
             "provider": "fal.ai",
+            "audio_format_sent": "wav",
         }
     except Exception as e:
         print(f"   ❌ Exceção fal lipsync: {e}")
