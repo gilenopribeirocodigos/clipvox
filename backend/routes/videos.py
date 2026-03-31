@@ -114,29 +114,16 @@ async def get_job_status(job_id: str):
         else:
             raise HTTPException(404, "Job not found")
     job = jobs_db[job_id]
-
-    audio_path = job.get("audio_path")
-    audio_basename = os.path.basename(audio_path) if audio_path else None
-    audio_file_url = f"/api/files/{audio_basename}" if audio_basename else None
-
-    reference_image_urls = []
-    for rp in job.get("ref_image_paths") or []:
-        if rp:
-            reference_image_urls.append(f"/api/files/{os.path.basename(rp)}")
-
     return {
         "id": job["id"], "status": job["status"], "progress": job["progress"],
         "current_step": job.get("current_step"), "audio_duration": job.get("audio_duration"),
         "audio_bpm": job.get("audio_bpm"), "audio_key": job.get("audio_key"),
-        "audio_filename": job.get("audio_filename"), "audio_file_url": audio_file_url,
         "creative_concept": job.get("creative_concept"), "scenes": job.get("scenes"),
         "segments": job.get("segments"), "output_file": job.get("output_file"),
         "error_message": job.get("error_message"), "video_clips": job.get("video_clips"),
         "videos_status": job.get("videos_status"), "lipsync_status": job.get("lipsync_status"),
         "lipsync_url": job.get("lipsync_url"), "lipsync_clips": job.get("lipsync_clips"),
         "merge_status": job.get("merge_status"), "merge_url": job.get("merge_url"),
-        "reference_image_urls": reference_image_urls,
-        "final_download_url": f"/api/videos/download/{job_id}",
         "cancelled": job.get("cancelled", False),
         "config": {
             "duration": job.get("duration"), "aspect_ratio": job.get("aspect_ratio"),
