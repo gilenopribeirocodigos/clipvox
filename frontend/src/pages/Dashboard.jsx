@@ -910,7 +910,7 @@ function MergePanel({ jobId, videoClips, lipSyncUrl }) {
 // 📋 ABA: RESULTADOS — vídeo final + download
 // ══════════════════════════════════════════════════════
 function ResultadosTab({ jobId, jobStatus, completedClips, lipSyncDone, lipSyncUrl, lipSyncClips, lipSyncWasStuck,
-  onVideosCompleted, onLipSyncCompleted, onCancel, onRetrySyncClip, onEditClip, cancelled, onReset }) {
+  onVideosCompleted, onLipSyncCompleted, onCancel, onRetrySyncClip, onEditClip, cancelled, onReset, onGoToEditor }) {
 
   const mergeUrl    = jobStatus?.merge_url || null
   const mergeStatus = jobStatus?.merge_status || null
@@ -951,9 +951,31 @@ function ResultadosTab({ jobId, jobStatus, completedClips, lipSyncDone, lipSyncU
             <button onClick={onReset} style={{ background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'8px 20px', color:'#fff', fontSize:13, cursor:'pointer' }}>🔄 Novo Videoclipe</button></>
           ) : (
             <>
-              <div style={{ fontSize:48, marginBottom:14 }}>🎬</div>
-              <div style={{ color:'#fff', fontSize:15, fontWeight:600, marginBottom:6 }}>Aguardando geração do vídeo final</div>
-              <div style={{ color:'#4b5563', fontSize:13 }}>Complete as etapas no Editor para gerar o merge</div>
+              {/* ✅ CTA clara quando imagens prontas mas vídeos ainda não gerados */}
+              {jobStatus?.status === 'completed' && !completedClips?.some(c => c.success) && !jobStatus?.videos_status?.match(/processing|completed/) ? (
+                <div style={{ animation:'fadeUp .4s ease' }}>
+                  <div style={{ fontSize:48, marginBottom:14 }}>✅</div>
+                  <div style={{ color:'#22c55e', fontSize:15, fontWeight:700, marginBottom:6 }}>
+                    {(jobStatus?.scenes?.filter(s => s.image_url)?.length || 0)} imagens geradas!
+                  </div>
+                  <div style={{ color:'#9ca3af', fontSize:13, marginBottom:20, lineHeight:1.6 }}>
+                    Agora acesse <strong style={{ color:'#fff' }}>Editor → Vídeos</strong> para gerar os clipes com Kling AI.<br/>
+                    Após gerar os clipes, o Merge final ficará disponível aqui.
+                  </div>
+                  {onGoToEditor && (
+                    <button onClick={onGoToEditor}
+                      style={{ padding:'11px 28px', background:'linear-gradient(135deg,#f97316,#ea580c)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer', boxShadow:'0 4px 18px rgba(249,115,22,.35)' }}>
+                      🎬 Ir para Editor → Gerar Vídeos
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <div style={{ fontSize:48, marginBottom:14 }}>🎬</div>
+                  <div style={{ color:'#fff', fontSize:15, fontWeight:600, marginBottom:6 }}>Aguardando geração do vídeo final</div>
+                  <div style={{ color:'#4b5563', fontSize:13 }}>Complete as etapas no Editor para gerar o merge</div>
+                </>
+              )}
             </>
           )}
         </div>
@@ -1347,10 +1369,34 @@ function EditorPanel({ scenes, jobId, jobStatus, videoClips, onEditScene, onEdit
 // ══════════════════════════════════════════════════════
 // 🗺️ ABA: TELA — pipeline visual de produção
 // ══════════════════════════════════════════════════════
-function TelaPanel({ jobStatus, jobId, scenes, completedClips, lipSyncClips, lipSyncDone, lipSyncUrl, cancelled, onReset }) {
+function TelaPanel({ jobStatus, jobId, scenes, completedClips, lipSyncClips, lipSyncDone, lipSyncUrl, cancelled, onReset, onGoToEditor }) {
   const steps = ['plan','analyzing','creative','scenes','segments','merge']
   const stepLabels = { plan:'Plano', analyzing:'Input Analyzing', creative:'Conceito Criativo', scenes:'Cinematografia', segments:'Síntese de Movimento', merge:'Pós-produção' }
   const stepIcons  = { plan:'📋', analyzing:'🔍', creative:'🎨', scenes:'📷', segments:'🎥', merge:'🎞️' }
+
+  // ✅ Cada etapa mapeada ao seu status real — não usa só status === 'completed'
+  const videosOk  = jobStatus?.videos_status === 'completed'
+  const mergeOk   = jobStatus?.merge_status  === 'completed'
+  const imagesOk  = jobStatus?.status === 'completed'
+  const conceptOk = !!jobStatus?.creative_concept
+  const audioOk   = !!jobStatus?.audio_duration
+
+  const stepDone = {
+    plan:     audioOk,
+    analyzing:audioOk,
+    creative: conceptOk,
+    scenes:   imagesOk,
+    segments: videosOk,
+    merge:    mergeOk,
+  }
+  const stepActive = {
+    plan:     !audioOk,
+    analyzing:audioOk && !conceptOk,
+    creative: conceptOk && !imagesOk,
+    scenes:   imagesOk && !videosOk && !mergeOk,
+    segments: videosOk && !mergeOk,
+    merge:    mergeOk,
+  }
 
   const currentIdx = jobStatus?.current_step ? steps.indexOf(jobStatus.current_step) : -1
 
@@ -1364,9 +1410,8 @@ function TelaPanel({ jobStatus, jobId, scenes, completedClips, lipSyncClips, lip
             <span style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:13, letterSpacing:2, color:'#fff' }}>ETAPAS PLANEJADAS</span>
           </div>
           {steps.map((step, i) => {
-            const done   = jobStatus?.status === 'completed' || (currentIdx > i)
-            const active = currentIdx === i
-            const pending = !done && !active
+            const done   = stepDone[step]
+            const active = !done && stepActive[step]
             return (
               <div key={step}>
                 <div style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 0' }}>
@@ -1476,8 +1521,8 @@ function TelaPanel({ jobStatus, jobId, scenes, completedClips, lipSyncClips, lip
           </div>
         )}
 
-        {/* Síntese de movimento — vídeos */}
-        {completedClips && completedClips.some(c => c.success) && (
+        {/* Síntese de movimento — vídeos ou CTA para gerar */}
+        {completedClips && completedClips.some(c => c.success) ? (
           <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:14, padding:18, animation:'fadeUp .5s ease' }}>
             <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14 }}>
               <span>🎥</span>
@@ -1493,7 +1538,38 @@ function TelaPanel({ jobStatus, jobId, scenes, completedClips, lipSyncClips, lip
               ))}
             </div>
           </div>
-        )}
+        ) : jobStatus?.status === 'completed' && scenes?.some(s => s.image_url) && !jobStatus?.videos_status?.match(/processing|completed/) ? (
+          /* ✅ CTA: imagens prontas mas vídeos ainda não foram gerados */
+          <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(249,115,22,.25)', borderRadius:14, padding:18, animation:'fadeUp .5s ease' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
+              <span>🎥</span>
+              <span style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:13, letterSpacing:2, color:'#fff' }}>SÍNTESE DE MOVIMENTO</span>
+              <span style={{ background:'rgba(249,115,22,.15)', color:'#f97316', fontSize:10, fontWeight:700, borderRadius:6, padding:'1px 7px', marginLeft:4 }}>Aguardando</span>
+            </div>
+            <div style={{ background:'rgba(249,115,22,.06)', border:'1px solid rgba(249,115,22,.15)', borderRadius:10, padding:'12px 14px', marginBottom:14 }}>
+              <div style={{ color:'#f97316', fontSize:12, fontWeight:600, marginBottom:4 }}>✅ {scenes.filter(s => s.image_url).length} imagens geradas com sucesso!</div>
+              <div style={{ color:'#9ca3af', fontSize:12, lineHeight:1.6 }}>
+                O próximo passo é gerar os clipes de vídeo com Kling AI.<br/>
+                Acesse a aba <strong style={{ color:'#fff' }}>Editor → Vídeos</strong> e clique em <strong style={{ color:'#fff' }}>Gerar Clipes</strong>.
+              </div>
+            </div>
+            {onGoToEditor && (
+              <button onClick={onGoToEditor}
+                style={{ width:'100%', padding:'11px', background:'linear-gradient(135deg,#f97316,#ea580c)', color:'#fff', border:'none', borderRadius:10, fontSize:13, fontWeight:600, cursor:'pointer', boxShadow:'0 4px 14px rgba(249,115,22,.3)' }}>
+                🎬 Ir para Editor → Gerar Vídeos
+              </button>
+            )}
+          </div>
+        ) : jobStatus?.videos_status === 'processing' ? (
+          <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:14, padding:18 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+              <span>🎥</span>
+              <span style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:13, letterSpacing:2, color:'#fff' }}>SÍNTESE DE MOVIMENTO</span>
+              <div style={{ width:12, height:12, border:'2px solid rgba(249,115,22,.3)', borderTop:'2px solid #f97316', borderRadius:'50%', animation:'spin .8s linear infinite', marginLeft:4 }} />
+            </div>
+            <div style={{ color:'#6b7280', fontSize:12 }}>Gerando clipes com Kling AI...</div>
+          </div>
+        ) : null}
 
         {/* Pós-produção — vídeo final */}
         {jobStatus?.merge_url ? (
@@ -1864,6 +1940,7 @@ export default function Dashboard({ onBack }) {
             onEditClip={handleEditClip}
             cancelled={cancelled}
             onReset={reset}
+            onGoToEditor={() => setActiveTab(1)}
           />
         )}
 
@@ -1898,6 +1975,7 @@ export default function Dashboard({ onBack }) {
             lipSyncUrl={lipSyncUrl}
             cancelled={cancelled}
             onReset={reset}
+            onGoToEditor={() => setActiveTab(1)}
           />
         )}
       </div>
