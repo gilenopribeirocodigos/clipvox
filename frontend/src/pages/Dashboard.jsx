@@ -1537,26 +1537,16 @@ function TelaPanel({ jobStatus, jobId, scenes, completedClips, lipSyncClips, lip
             </div>
           </div>
         ) : jobStatus?.status === 'completed' && scenes?.some(s => s.image_url) && !jobStatus?.videos_status?.match(/processing|completed/) ? (
-          /* ✅ CTA: imagens prontas mas vídeos ainda não foram gerados */
-          <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(249,115,22,.25)', borderRadius:14, padding:18, animation:'fadeUp .5s ease' }}>
-            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
+          /* Imagens prontas, aguardando geração de vídeos (ocorre automaticamente na aba Resultados) */
+          <div style={{ background:'rgba(16,16,24,.6)', border:'1px solid rgba(255,255,255,.07)', borderRadius:14, padding:18, animation:'fadeUp .5s ease' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
               <span>🎥</span>
-              <span style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:13, letterSpacing:2, color:'#fff' }}>SÍNTESE DE MOVIMENTO</span>
-              <span style={{ background:'rgba(249,115,22,.15)', color:'#f97316', fontSize:10, fontWeight:700, borderRadius:6, padding:'1px 7px', marginLeft:4 }}>Aguardando</span>
+              <span style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:13, letterSpacing:2, color:'#4b5563' }}>SÍNTESE DE MOVIMENTO</span>
+              <div style={{ width:10, height:10, border:'2px solid rgba(249,115,22,.3)', borderTop:'2px solid #f97316', borderRadius:'50%', animation:'spin .8s linear infinite', marginLeft:4 }} />
             </div>
-            <div style={{ background:'rgba(249,115,22,.06)', border:'1px solid rgba(249,115,22,.15)', borderRadius:10, padding:'12px 14px', marginBottom:14 }}>
-              <div style={{ color:'#f97316', fontSize:12, fontWeight:600, marginBottom:4 }}>✅ {scenes.filter(s => s.image_url).length} imagens geradas com sucesso!</div>
-              <div style={{ color:'#9ca3af', fontSize:12, lineHeight:1.6 }}>
-                O próximo passo é gerar os clipes de vídeo com Kling AI.<br/>
-                Acesse a aba <strong style={{ color:'#fff' }}>Editor → Vídeos</strong> e clique em <strong style={{ color:'#fff' }}>Gerar Clipes</strong>.
-              </div>
+            <div style={{ color:'#4b5563', fontSize:12 }}>
+              {scenes.filter(s => s.image_url).length} imagens geradas — aguardando geração de vídeos na aba Resultados ↗
             </div>
-            {onGoToEditor && (
-              <button onClick={onGoToEditor}
-                style={{ width:'100%', padding:'11px', background:'linear-gradient(135deg,#f97316,#ea580c)', color:'#fff', border:'none', borderRadius:10, fontSize:13, fontWeight:600, cursor:'pointer', boxShadow:'0 4px 14px rgba(249,115,22,.3)' }}>
-                🎬 Ir para Editor → Gerar Vídeos
-              </button>
-            )}
           </div>
         ) : jobStatus?.videos_status === 'processing' ? (
           <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:14, padding:18 }}>
