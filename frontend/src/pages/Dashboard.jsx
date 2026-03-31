@@ -910,7 +910,7 @@ function MergePanel({ jobId, videoClips, lipSyncUrl }) {
 // 📋 ABA: RESULTADOS — vídeo final + download
 // ══════════════════════════════════════════════════════
 function ResultadosTab({ jobId, jobStatus, completedClips, lipSyncDone, lipSyncUrl, lipSyncClips, lipSyncWasStuck,
-  onVideosCompleted, onLipSyncCompleted, onCancel, onRetrySyncClip, onEditClip, cancelled, onReset, onGoToEditor }) {
+  onVideosCompleted, onLipSyncCompleted, onCancel, onRetrySyncClip, onEditClip, cancelled, onReset }) {
 
   const mergeUrl    = jobStatus?.merge_url || null
   const mergeStatus = jobStatus?.merge_status || null
@@ -918,8 +918,37 @@ function ResultadosTab({ jobId, jobStatus, completedClips, lipSyncDone, lipSyncU
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-      {/* Vídeo final em destaque */}
-      {mergeUrl ? (
+
+      {/* ── Spinner enquanto pipeline inicial ainda processa ── */}
+      {!jobStatus && !cancelled && (
+        <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:'56px 24px', textAlign:'center' }}>
+          <div style={{ width:38, height:38, margin:'0 auto 14px', border:'3px solid rgba(255,255,255,.1)', borderTop:'3px solid #f97316', borderRadius:'50%', animation:'spin .8s linear infinite' }} />
+          <p style={{ color:'#6b7280', fontSize:14, marginBottom:16 }}>Processando sua música com IA...</p>
+          <button onClick={onCancel} style={{ background:'rgba(239,68,68,.1)', border:'1px solid rgba(239,68,68,.3)', borderRadius:10, padding:'8px 20px', color:'#ef4444', fontSize:12, cursor:'pointer' }}>🛑 Cancelar geração</button>
+        </div>
+      )}
+
+      {/* ── Cancelado ── */}
+      {cancelled && (
+        <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:'40px 24px', textAlign:'center' }}>
+          <div style={{ fontSize:32, marginBottom:10 }}>🛑</div>
+          <p style={{ color:'#ef4444', fontSize:14, marginBottom:12 }}>Geração cancelada</p>
+          <button onClick={onReset} style={{ background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'8px 20px', color:'#fff', fontSize:13, cursor:'pointer' }}>🔄 Novo Videoclipe</button>
+        </div>
+      )}
+
+      {/* ── Falhou ── */}
+      {jobStatus?.status === 'failed' && (
+        <div style={{ background:'rgba(239,68,68,.05)', border:'1px solid rgba(239,68,68,.2)', borderRadius:16, padding:'32px 24px', textAlign:'center', animation:'fadeUp .5s ease' }}>
+          <div style={{ fontSize:36, marginBottom:12 }}>❌</div>
+          <h3 style={{ color:'#ef4444', fontSize:16, fontWeight:600, marginBottom:8 }}>Erro na geração</h3>
+          <p style={{ color:'#6b7280', fontSize:13, marginBottom:20 }}>{jobStatus.error_message || 'Erro desconhecido'}</p>
+          <button onClick={onReset} style={{ background:'rgba(255,255,255,.06)', color:'#fff', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'10px 24px', fontSize:14, cursor:'pointer' }}>🔄 Tentar Novamente</button>
+        </div>
+      )}
+
+      {/* ── Vídeo final em destaque (quando merge concluído) ── */}
+      {mergeUrl && (
         <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(34,197,94,.2)', borderRadius:16, overflow:'hidden', animation:'fadeUp .4s ease' }}>
           <div style={{ padding:'14px 20px', display:'flex', alignItems:'center', justifyContent:'space-between', borderBottom:'1px solid rgba(255,255,255,.06)' }}>
             <div style={{ display:'flex', alignItems:'center', gap:10 }}>
@@ -938,52 +967,28 @@ function ResultadosTab({ jobId, jobStatus, completedClips, lipSyncDone, lipSyncU
           </div>
           <video src={mergeUrl} controls style={{ width:'100%', display:'block', maxHeight:480, background:'#000' }} />
         </div>
-      ) : (
-        <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:'40px 24px', textAlign:'center' }}>
-          {!jobStatus && !cancelled ? (
-            <>
-              <div style={{ width:38, height:38, margin:'0 auto 14px', border:'3px solid rgba(255,255,255,.1)', borderTop:'3px solid #f97316', borderRadius:'50%', animation:'spin .8s linear infinite' }} />
-              <p style={{ color:'#6b7280', fontSize:14, marginBottom:16 }}>Processando sua música com IA...</p>
-              <button onClick={onCancel} style={{ background:'rgba(239,68,68,.1)', border:'1px solid rgba(239,68,68,.3)', borderRadius:10, padding:'8px 20px', color:'#ef4444', fontSize:12, cursor:'pointer' }}>🛑 Cancelar geração</button>
-            </>
-          ) : cancelled ? (
-            <><div style={{ fontSize:32, marginBottom:10 }}>🛑</div><p style={{ color:'#ef4444', fontSize:14, marginBottom:12 }}>Geração cancelada</p>
-            <button onClick={onReset} style={{ background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'8px 20px', color:'#fff', fontSize:13, cursor:'pointer' }}>🔄 Novo Videoclipe</button></>
-          ) : (
-            <>
-              {/* ✅ CTA clara quando imagens prontas mas vídeos ainda não gerados */}
-              {jobStatus?.status === 'completed' && !completedClips?.some(c => c.success) && !jobStatus?.videos_status?.match(/processing|completed/) ? (
-                <div style={{ animation:'fadeUp .4s ease' }}>
-                  <div style={{ fontSize:48, marginBottom:14 }}>✅</div>
-                  <div style={{ color:'#22c55e', fontSize:15, fontWeight:700, marginBottom:6 }}>
-                    {(jobStatus?.scenes?.filter(s => s.image_url)?.length || 0)} imagens geradas!
-                  </div>
-                  <div style={{ color:'#9ca3af', fontSize:13, marginBottom:20, lineHeight:1.6 }}>
-                    Agora acesse <strong style={{ color:'#fff' }}>Editor → Vídeos</strong> para gerar os clipes com Kling AI.<br/>
-                    Após gerar os clipes, o Merge final ficará disponível aqui.
-                  </div>
-                  {onGoToEditor && (
-                    <button onClick={onGoToEditor}
-                      style={{ padding:'11px 28px', background:'linear-gradient(135deg,#f97316,#ea580c)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer', boxShadow:'0 4px 18px rgba(249,115,22,.35)' }}>
-                      🎬 Ir para Editor → Gerar Vídeos
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <>
-                  <div style={{ fontSize:48, marginBottom:14 }}>🎬</div>
-                  <div style={{ color:'#fff', fontSize:15, fontWeight:600, marginBottom:6 }}>Aguardando geração do vídeo final</div>
-                  <div style={{ color:'#4b5563', fontSize:13 }}>Complete as etapas no Editor para gerar o merge</div>
-                </>
-              )}
-            </>
-          )}
-        </div>
       )}
 
-      {/* ✅ LipSync e Merge: só mostra se o merge ainda NÃO foi concluído */}
+      {/* ══════════════════════════════════════════════════════════════
+          FLUXO SEQUENCIAL AUTOMÁTICO — igual ao original:
+          1. Imagens prontas → VideoClipsPanel aparece
+          2. Clipes prontos  → LipSyncPanel aparece
+          3. Lip sync pronto → MergePanel aparece
+          Cada painel só aparece quando o anterior estiver concluído.
+          Tudo some quando mergeDone (já tem vídeo final).
+      ══════════════════════════════════════════════════════════════ */}
       {!mergeDone && jobStatus?.status === 'completed' && jobId && (
         <>
+          {/* 1. VideoClipsPanel — aparece assim que imagens estão prontas */}
+          <VideoClipsPanel
+            jobId={jobId}
+            jobStatus={jobStatus}
+            onVideosCompleted={onVideosCompleted}
+            onCancel={onCancel}
+            onEditClip={onEditClip}
+          />
+
+          {/* 2. LipSyncPanel — aparece quando vídeos gerados */}
           {(completedClips?.some(c => c.success) || lipSyncWasStuck) && !lipSyncDone && (
             <LipSyncPanel
               jobId={jobId} videoClips={completedClips}
@@ -1005,19 +1010,12 @@ function ResultadosTab({ jobId, jobStatus, completedClips, lipSyncDone, lipSyncU
               lipSyncClips={lipSyncClips}
             />
           )}
+
+          {/* 3. MergePanel — aparece quando lip sync concluído */}
           {completedClips?.some(c => c.success) && lipSyncDone && (
             <MergePanel jobId={jobId} videoClips={completedClips} lipSyncUrl={lipSyncUrl} />
           )}
         </>
-      )}
-
-      {jobStatus?.status === 'failed' && (
-        <div style={{ background:'rgba(239,68,68,.05)', border:'1px solid rgba(239,68,68,.2)', borderRadius:16, padding:'32px 24px', textAlign:'center', animation:'fadeUp .5s ease' }}>
-          <div style={{ fontSize:36, marginBottom:12 }}>❌</div>
-          <h3 style={{ color:'#ef4444', fontSize:16, fontWeight:600, marginBottom:8 }}>Erro na geração</h3>
-          <p style={{ color:'#6b7280', fontSize:13, marginBottom:20 }}>{jobStatus.error_message || 'Erro desconhecido'}</p>
-          <button onClick={onReset} style={{ background:'rgba(255,255,255,.06)', color:'#fff', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'10px 24px', fontSize:14, cursor:'pointer' }}>🔄 Tentar Novamente</button>
-        </div>
       )}
     </div>
   )
@@ -1940,7 +1938,6 @@ export default function Dashboard({ onBack }) {
             onEditClip={handleEditClip}
             cancelled={cancelled}
             onReset={reset}
-            onGoToEditor={() => setActiveTab(1)}
           />
         )}
 
