@@ -263,6 +263,14 @@ function UploadZone({ onStart }) {
 function LeftPanel({ fileName, jobStatus, onReset }) {
   const steps = ['plan','analyzing','creative','scenes','segments','merge']
   const stepLabels = { plan:'Plan', analyzing:'Input Analyzing', creative:'Creative Concept', scenes:'Scenes', segments:'Video Segments', merge:'Merge Final' }
+  const stepDesc = {
+    plan:      'Criando o plano narrativo e estrutura do videoclipe...',
+    analyzing: 'Analisando BPM, ritmo e estrutura musical do áudio...',
+    creative:  'Gerando conceito criativo, paleta de cores e direção visual...',
+    scenes:    'Gerando imagens de cada cena com IA (Nano Banana)...',
+    segments:  'Convertendo imagens em clipes de vídeo com Kling AI...',
+    merge:     'Unindo todos os clipes e adicionando o áudio final...',
+  }
   return (
     <div style={{ width:310, minWidth:280, display:'flex', flexDirection:'column', gap:16 }}>
       <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:18 }}>
@@ -285,13 +293,24 @@ function LeftPanel({ fileName, jobStatus, onReset }) {
           const done   = jobStatus?.status === 'completed' || (jobStatus?.current_step && steps.indexOf(jobStatus.current_step) > i)
           const active = jobStatus?.current_step === step
           return (
-            <div key={step} style={{ display:'flex', alignItems:'center', gap:12, padding:'9px 0', borderBottom: i < steps.length-1 ? '1px solid rgba(255,255,255,.045)' : 'none' }}>
-              <div style={{ width:26, height:26, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background: done ? 'rgba(34,197,94,.15)' : active ? 'rgba(249,115,22,.15)' : 'rgba(255,255,255,.04)', border: done ? '1px solid rgba(34,197,94,.4)' : active ? '1px solid rgba(249,115,22,.4)' : '1px solid rgba(255,255,255,.1)', fontSize:11, fontWeight:700, color: done ? '#22c55e' : active ? '#f97316' : '#4b5563' }}>
-                {done ? '✓' : i+1}
+            <div key={step}>
+              <div style={{ display:'flex', alignItems:'center', gap:12, padding:'9px 0', borderBottom: (!active && i < steps.length-1) ? '1px solid rgba(255,255,255,.045)' : 'none' }}>
+                <div style={{ width:26, height:26, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background: done ? 'rgba(34,197,94,.15)' : active ? 'rgba(249,115,22,.15)' : 'rgba(255,255,255,.04)', border: done ? '1px solid rgba(34,197,94,.4)' : active ? '1px solid rgba(249,115,22,.4)' : '1px solid rgba(255,255,255,.1)', fontSize:11, fontWeight:700, color: done ? '#22c55e' : active ? '#f97316' : '#4b5563' }}>
+                  {done ? '✓' : active ? <div style={{ width:8,height:8,border:'2px solid rgba(249,115,22,.4)',borderTop:'2px solid #f97316',borderRadius:'50%',animation:'spin .8s linear infinite' }} /> : i+1}
+                </div>
+                <span style={{ flex:1, fontSize:13, fontWeight: active ? 600 : 400, color: done ? '#6b7280' : active ? '#fff' : '#4b5563' }}>{stepLabels[step]}</span>
+                {done && <span style={{ color:'#22c55e', fontSize:15 }}>✓</span>}
               </div>
-              <span style={{ flex:1, fontSize:13, fontWeight: active ? 600 : 400, color: done ? '#6b7280' : active ? '#fff' : '#4b5563' }}>{stepLabels[step]}</span>
-              {done && <span style={{ color:'#22c55e', fontSize:15 }}>✓</span>}
-              {active && <span style={{ color:'#f97316', fontSize:11, animation:'pulse 1.4s ease infinite' }}>⏳</span>}
+              {/* Descrição do step ativo logo abaixo */}
+              {active && (
+                <div style={{ margin:'2px 0 10px 38px', padding:'8px 12px', background:'rgba(249,115,22,.06)', border:'1px solid rgba(249,115,22,.15)', borderRadius:8, borderBottom:'1px solid rgba(255,255,255,.045)', animation:'fadeUp .3s ease' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
+                    <div style={{ width:6,height:6,borderRadius:'50%',background:'#f97316',animation:'pulse 1.4s ease infinite' }} />
+                    <span style={{ color:'#f97316', fontSize:9, fontWeight:700, letterSpacing:.5 }}>EM ANDAMENTO</span>
+                  </div>
+                  <p style={{ color:'#9ca3af', fontSize:11, lineHeight:1.6 }}>{stepDesc[step]}</p>
+                </div>
+              )}
             </div>
           )
         })}
@@ -917,13 +936,38 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncSta
   )
 }
 
-function MergePanel({ jobId, videoClips, lipSyncUrl }) {
-  const [mergeStatus, setMergeStatus] = useState(null)
-  const [mergeUrl,    setMergeUrl]    = useState(null)
+// ✅ Força download real via Blob — evita que o browser abra o arquivo inline
+async function forceDownload(url, filename) {
+  try {
+    const res  = await fetch(url)
+    const blob = await res.blob()
+    const a    = document.createElement('a')
+    a.href     = URL.createObjectURL(blob)
+    a.download = filename
+    document.body.appendChild(a); a.click()
+    setTimeout(() => { URL.revokeObjectURL(a.href); document.body.removeChild(a) }, 200)
+  } catch(e) {
+    // fallback: abre em nova aba se fetch falhar (CORS)
+    window.open(url, '_blank')
+  }
+}
+
+function MergePanel({ jobId, videoClips, lipSyncUrl, initialMergeStatus, initialMergeUrl }) {
+  // ✅ FIX: inicializa com o status real do job — evita mostrar botão quando merge já concluído
+  const [mergeStatus, setMergeStatus] = useState(initialMergeStatus || null)
+  const [mergeUrl,    setMergeUrl]    = useState(initialMergeUrl || null)
   const [mergeError,  setMergeError]  = useState(null)
   const [loading,     setLoading]     = useState(false)
   const pollRef = useRef()
   useEffect(() => { return () => { if (pollRef.current) clearInterval(pollRef.current) } }, [])
+
+  // ✅ FIX: se o job já tinha merge concluído ao montar, atualiza estado
+  useEffect(() => {
+    if (initialMergeStatus === 'completed' && initialMergeUrl) {
+      setMergeStatus('completed'); setMergeUrl(initialMergeUrl)
+    }
+  }, [initialMergeStatus, initialMergeUrl])
+
   const successClips = (videoClips || []).filter(c => c.success && c.video_url)
 
   const handleMerge = async () => {
@@ -987,15 +1031,17 @@ function MergePanel({ jobId, videoClips, lipSyncUrl }) {
         <div style={{ textAlign:'center', padding:'16px 0' }}>
           <div style={{ fontSize:40, marginBottom:12 }}>🎉</div>
           <div style={{ color:'#22c55e', fontSize:16, fontWeight:700, marginBottom:6 }}>Videoclipe pronto!</div>
+          <div style={{ color:'#9ca3af', fontSize:12, marginBottom:16 }}>Acesse a aba <strong style={{ color:'#fff' }}>Resultado</strong> para assistir e baixar</div>
           <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap' }}>
             <a href={mergeUrl} target="_blank" rel="noreferrer"
               style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'12px 24px', background:'linear-gradient(135deg,#22c55e,#16a34a)', color:'#fff', borderRadius:12, fontSize:14, fontWeight:600, textDecoration:'none' }}>
               ▶ Assistir Vídeo
             </a>
-            <a href={mergeUrl} download={`clipvox_${jobId}.mp4`}
-              style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'12px 24px', background:'rgba(255,255,255,.07)', color:'#fff', border:'1px solid rgba(255,255,255,.15)', borderRadius:12, fontSize:14, fontWeight:600, textDecoration:'none' }}>
+            {/* ✅ FIX: forceDownload via Blob — evita abrir no browser */}
+            <button onClick={() => forceDownload(mergeUrl, `clipvox_${jobId}.mp4`)}
+              style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'12px 24px', background:'rgba(255,255,255,.07)', color:'#fff', border:'1px solid rgba(255,255,255,.15)', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer' }}>
               ⬇ Baixar MP4
-            </a>
+            </button>
           </div>
         </div>
       )}
@@ -1640,10 +1686,10 @@ export default function Dashboard({ onBack }) {
                         style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'8px 16px', background:'rgba(34,197,94,.1)', border:'1px solid rgba(34,197,94,.3)', color:'#22c55e', borderRadius:10, fontSize:12, fontWeight:600, textDecoration:'none' }}>
                         ▶ Assistir
                       </a>
-                      <a href={jobStatus.merge_url} download={`clipvox_${jobId}.mp4`}
-                        style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'8px 16px', background:'rgba(249,115,22,.1)', border:'1px solid rgba(249,115,22,.3)', color:'#f97316', borderRadius:10, fontSize:12, fontWeight:600, textDecoration:'none' }}>
+                      <button onClick={() => forceDownload(jobStatus.merge_url, `clipvox_${jobId}.mp4`)}
+                        style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'8px 16px', background:'rgba(249,115,22,.1)', border:'1px solid rgba(249,115,22,.3)', color:'#f97316', borderRadius:10, fontSize:12, fontWeight:600, cursor:'pointer' }}>
                         ⬇ Baixar MP4
-                      </a>
+                      </button>
                     </div>
                   </div>
                   <video src={jobStatus.merge_url} controls style={{ width:'100%', display:'block', maxHeight:480, background:'#000' }} />
@@ -1754,7 +1800,13 @@ export default function Dashboard({ onBack }) {
               )}
 
               {completedClips?.some(c => c.success) && lipSyncDone && (
-                <MergePanel jobId={jobId} videoClips={completedClips} lipSyncUrl={lipSyncUrl} />
+                <MergePanel
+                  jobId={jobId}
+                  videoClips={completedClips}
+                  lipSyncUrl={lipSyncUrl}
+                  initialMergeStatus={jobStatus?.merge_status}
+                  initialMergeUrl={jobStatus?.merge_url}
+                />
               )}
             </>
           )}
