@@ -1062,6 +1062,268 @@ function ScenesGrid({ scenes, jobId, onEditScene }) {
 }
 
 // ══════════════════════════════════════════════════════
+// 🎛️ EDITOR — Timeline de segmentos + waveform MP3
+// ══════════════════════════════════════════════════════
+function EditorTimeline({ items, selectedIdx, onSelect, color, fileName }) {
+  const [hovered, setHovered] = useState(null)
+  return (
+    <div style={{ background:'rgba(8,8,12,.9)', borderTop:'1px solid rgba(255,255,255,.06)', padding:'10px 14px 12px' }}>
+      {/* Barra de controles */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:6, color:'#6b7280', fontSize:11 }}>
+        <span style={{ cursor:'pointer' }}>✂️</span>
+        <div style={{ flex:1, display:'flex', justifyContent:'center', alignItems:'center', gap:8 }}>
+          <span>▶</span>
+          <span style={{ color:'#9ca3af' }}>0:00:00</span>
+        </div>
+        <span style={{ fontSize:10 }}>🔍−</span>
+        <input type="range" min={0} max={100} defaultValue={50} style={{ width:70, accentColor:color }} />
+        <span style={{ fontSize:10 }}>🔍+</span>
+      </div>
+      {/* Marcadores de tempo */}
+      <div style={{ position:'relative', height:12, marginBottom:2 }}>
+        {['s','30s','1m','1:30','2m','2:30','3m'].map((label, i, arr) => (
+          <span key={i} style={{ position:'absolute', left:`${(i/(arr.length-1))*100}%`, fontSize:8.5, color:'#374151', transform:'translateX(-50%)' }}>{label}</span>
+        ))}
+      </div>
+      {/* Segmentos clicáveis */}
+      <div style={{ height:26, background:'rgba(255,255,255,.03)', borderRadius:4, display:'flex', gap:1.5, overflow:'hidden', cursor:'pointer', marginBottom:3 }}>
+        {items.length === 0
+          ? <div style={{ flex:1, background:`${color}22`, borderRadius:4, display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <span style={{ color:'#374151', fontSize:10 }}>aguardando...</span>
+            </div>
+          : items.map((item, i) => (
+            <div key={i}
+              onClick={() => onSelect(i)}
+              onMouseEnter={() => setHovered(i)}
+              onMouseLeave={() => setHovered(null)}
+              title={`#${item.scene_number || (i+1)}`}
+              style={{
+                flex: item.duration_seconds || 1, minWidth:8,
+                background: i === selectedIdx ? color : hovered === i ? `${color}cc` : `${color}88`,
+                borderRadius:2, transition:'background .12s',
+                outline: i === selectedIdx ? `2px solid ${color}` : 'none', outlineOffset:-1
+              }} />
+          ))
+        }
+      </div>
+      {/* Waveform MP3 */}
+      <div style={{ height:20, background:'rgba(255,255,255,.03)', borderRadius:4, overflow:'hidden', position:'relative', display:'flex', alignItems:'center' }}>
+        <span style={{ position:'absolute', left:6, fontSize:8, color:'#374151', whiteSpace:'nowrap', zIndex:1 }}>
+          🎵 {fileName || 'audio.mp3'}
+        </span>
+        <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', paddingLeft:88, paddingRight:4, gap:0.5 }}>
+          {Array.from({ length:130 }).map((_,i) => (
+            <div key={i} style={{ flex:1, background:'rgba(249,115,22,.38)', borderRadius:1, height:`${18+((i*41+7)%52)}%` }} />
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════
+// 🎛️ EDITOR PREVIEW — sub-abas Shotlist / Imagens / Videos
+// ══════════════════════════════════════════════════════
+function EditorPanel({ scenes, completedClips, jobStatus, onEditScene, onEditClip, fileName }) {
+  const [subTab,      setSubTab]      = useState(0)
+  const [selectedIdx, setSelectedIdx] = useState(0)
+  const [modal,       setModal]       = useState(null) // null | number
+
+  const shotItems  = scenes || []
+  const imageItems = (scenes || []).filter(s => s.image_url)
+  const videoItems = (completedClips || []).filter(c => c.success && c.video_url)
+  const allItems   = [shotItems, imageItems, videoItems]
+  const counts     = allItems.map(a => a.length)
+  const currentItems = allItems[subTab]
+  const selectedItem = currentItems[selectedIdx] || null
+  const tabColors    = ['#f97316','#22c55e','#a78bfa']
+  const color        = tabColors[subTab]
+
+  const switchSub  = (idx) => { setSubTab(idx); setSelectedIdx(0); setModal(null) }
+  const openModal  = (idx) => { setSelectedIdx(idx); setModal(idx) }
+  const closeModal = ()    => setModal(null)
+  const navModal   = (d)   => {
+    const next = Math.max(0, Math.min(currentItems.length-1, modal+d))
+    setModal(next); setSelectedIdx(next)
+  }
+
+  return (
+    <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, overflow:'hidden', animation:'fadeUp .4s ease' }}>
+
+      {/* Header */}
+      <div style={{ padding:'12px 18px', display:'flex', alignItems:'center', justifyContent:'space-between', borderBottom:'1px solid rgba(255,255,255,.07)' }}>
+        <span style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:13, letterSpacing:2, color:'#fff' }}>EDITOR PREVIEW</span>
+        <div style={{ display:'flex', gap:4 }}>
+          {['Shotlist','Imagens','Videos'].map((label, idx) => (
+            <button key={idx} onClick={() => switchSub(idx)}
+              style={{ padding:'5px 13px', borderRadius:7, fontSize:12, fontWeight:600, cursor:'pointer',
+                background: subTab===idx ? 'rgba(255,255,255,.1)' : 'transparent',
+                border: subTab===idx ? '1px solid rgba(255,255,255,.18)' : '1px solid rgba(255,255,255,.06)',
+                color: subTab===idx ? '#fff' : '#6b7280', transition:'all .2s' }}>
+              {label} ({counts[idx]})
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Preview Area */}
+      <div style={{ position:'relative', background:'#050508', minHeight:260 }}>
+
+        {/* SHOTLIST preview */}
+        {subTab === 0 && selectedItem && modal === null && (
+          <div style={{ padding:'20px 24px', animation:'fadeUp .3s ease' }}>
+            <div style={{ color:'#9ca3af', fontSize:12, fontWeight:600, marginBottom:16 }}>Shot List Preview</div>
+            <div style={{ marginBottom:14 }}>
+              <div style={{ color:'#4b5563', fontSize:9, fontWeight:700, letterSpacing:1, marginBottom:5 }}>START FRAME</div>
+              <p style={{ color:'#d1d5db', fontSize:13, lineHeight:1.65 }}>{resolvePrompt(selectedItem) || selectedItem.camera_movement || '—'}</p>
+            </div>
+            <div>
+              <div style={{ color:'#4b5563', fontSize:9, fontWeight:700, letterSpacing:1, marginBottom:5 }}>ACTION & CAMERA</div>
+              <p style={{ color:'#d1d5db', fontSize:13, lineHeight:1.65 }}>{selectedItem.camera_movement || selectedItem.mood || '—'}</p>
+            </div>
+          </div>
+        )}
+
+        {/* IMAGENS preview */}
+        {subTab === 1 && selectedItem && modal === null && (
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:260, padding:16, animation:'fadeUp .3s ease' }}>
+            {selectedItem.image_url
+              ? <img src={selectedItem.image_url} alt="" style={{ maxHeight:240, maxWidth:'100%', objectFit:'contain', borderRadius:6 }} />
+              : <div style={{ color:'#4b5563', fontSize:13 }}>Sem imagem</div>}
+          </div>
+        )}
+
+        {/* VIDEOS preview */}
+        {subTab === 2 && selectedItem && modal === null && (
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:260, padding:16, animation:'fadeUp .3s ease' }}>
+            {selectedItem.video_url
+              ? <video key={selectedItem.video_url} src={selectedItem.video_url} controls style={{ maxHeight:240, maxWidth:'100%', borderRadius:6 }} />
+              : <div style={{ color:'#4b5563', fontSize:13 }}>Sem vídeo</div>}
+          </div>
+        )}
+
+        {/* Empty state */}
+        {(currentItems.length === 0) && modal === null && (
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:260, flexDirection:'column', gap:10, color:'#374151' }}>
+            <div style={{ fontSize:34 }}>{subTab===0 ? '📋' : subTab===1 ? '🖼️' : '🎥'}</div>
+            <div style={{ fontSize:13 }}>Aguardando geração...</div>
+          </div>
+        )}
+
+        {/* ══ MODAL OVERLAY ══ */}
+        {modal !== null && (() => {
+          const item  = currentItems[modal]
+          if (!item) return null
+          const total = currentItems.length
+          return (
+            <div style={{ position:'absolute', inset:0, background:'rgba(10,10,14,.97)', zIndex:20, display:'flex', flexDirection:'column', padding:'18px 20px', overflowY:'auto', animation:'fadeUp .25s ease' }}>
+              <button onClick={closeModal}
+                style={{ position:'absolute', top:12, right:14, background:'rgba(255,255,255,.07)', border:'none', borderRadius:7, color:'#9ca3af', fontSize:14, cursor:'pointer', padding:'3px 10px' }}>✕</button>
+
+              {/* SHOT modal */}
+              {subTab === 0 && (
+                <>
+                  <div style={{ color:'#fff', fontSize:14, fontWeight:700, marginBottom:14 }}>Shot #{item.scene_number}</div>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, flex:1 }}>
+                    <div style={{ background:'rgba(255,255,255,.04)', borderRadius:12, padding:'14px 16px' }}>
+                      <div style={{ color:'#9ca3af', fontSize:11, fontWeight:700, letterSpacing:.5, marginBottom:12 }}>Shot Details</div>
+                      <div style={{ color:'#4b5563', fontSize:9, letterSpacing:.5, marginBottom:3 }}>TIME</div>
+                      <div style={{ color:'#d1d5db', fontSize:12, marginBottom:10 }}>{item.duration_seconds || 5}s</div>
+                      <div style={{ color:'#4b5563', fontSize:9, letterSpacing:.5, marginBottom:3 }}>ACTION & CONTENT</div>
+                      <div style={{ color:'#d1d5db', fontSize:12, lineHeight:1.6, marginBottom:10 }}>{item.camera_movement || item.mood || '—'}</div>
+                      <div style={{ color:'#4b5563', fontSize:9, letterSpacing:.5, marginBottom:3 }}>TYPE</div>
+                      <div style={{ color:'#22c55e', fontSize:12, fontWeight:600 }}>A-roll</div>
+                    </div>
+                    <div style={{ background:'rgba(255,255,255,.04)', borderRadius:12, padding:'14px 16px' }}>
+                      <div style={{ color:'#9ca3af', fontSize:11, fontWeight:700, letterSpacing:.5, marginBottom:10 }}>Prompt Content</div>
+                      <p style={{ color:'#d1d5db', fontSize:12, lineHeight:1.7 }}>{resolvePrompt(item) || '—'}</p>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* IMAGEM modal */}
+              {subTab === 1 && (
+                <>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14 }}>
+                    <span style={{ color:'#fff', fontSize:14, fontWeight:700 }}>Cena #{item.scene_number}</span>
+                    <span style={{ background:'rgba(34,197,94,.15)', color:'#22c55e', fontSize:9, fontWeight:700, borderRadius:5, padding:'2px 7px' }}>Sucesso</span>
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, flex:1 }}>
+                    <div>
+                      <div style={{ color:'#9ca3af', fontSize:11, fontWeight:600, marginBottom:8 }}>Imagem gerada</div>
+                      {item.image_url && <img src={item.image_url} alt="" style={{ width:'100%', borderRadius:10, display:'block', marginBottom:8, maxHeight:190, objectFit:'cover' }} />}
+                      <div style={{ display:'flex', gap:6 }}>
+                        <button onClick={() => { onEditScene && onEditScene(item); closeModal() }}
+                          style={{ flex:1, padding:'7px', background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:8, color:'#9ca3af', fontSize:10, cursor:'pointer' }}>✏️ Editar</button>
+                        <a href={item.image_url} download={`cena_${item.scene_number}.jpg`} target="_blank" rel="noreferrer"
+                          style={{ flex:1, padding:'7px', background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:8, color:'#9ca3af', fontSize:10, cursor:'pointer', textDecoration:'none', textAlign:'center' }}>⬇ Baixar</a>
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ color:'#9ca3af', fontSize:11, fontWeight:600, marginBottom:8 }}>Conteúdo do prompt</div>
+                      <div style={{ background:'rgba(255,255,255,.04)', borderRadius:10, padding:'12px', maxHeight:230, overflowY:'auto' }}>
+                        <p style={{ color:'#d1d5db', fontSize:12, lineHeight:1.7 }}>{resolvePrompt(item) || '—'}</p>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* VÍDEO modal */}
+              {subTab === 2 && (
+                <>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14 }}>
+                    <span style={{ color:'#fff', fontSize:14, fontWeight:700 }}>Vídeo #{item.scene_number}</span>
+                    <span style={{ background:'rgba(34,197,94,.15)', color:'#22c55e', fontSize:9, fontWeight:700, borderRadius:5, padding:'2px 7px' }}>Sucesso</span>
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, flex:1 }}>
+                    <div>
+                      <div style={{ color:'#9ca3af', fontSize:11, fontWeight:600, marginBottom:8 }}>Vídeo gerado</div>
+                      <video key={item.video_url} src={item.video_url} controls style={{ width:'100%', borderRadius:10, display:'block', maxHeight:190, marginBottom:8 }} />
+                      <div style={{ display:'flex', gap:6 }}>
+                        <button onClick={() => { onEditClip && onEditClip(item); closeModal() }}
+                          style={{ flex:1, padding:'7px', background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:8, color:'#9ca3af', fontSize:10, cursor:'pointer' }}>✏️ Editar</button>
+                        <a href={item.video_url} download={`video_${item.scene_number}.mp4`} target="_blank" rel="noreferrer"
+                          style={{ flex:1, padding:'7px', background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:8, color:'#9ca3af', fontSize:10, cursor:'pointer', textDecoration:'none', textAlign:'center' }}>⬇ Baixar</a>
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ color:'#9ca3af', fontSize:11, fontWeight:600, marginBottom:8 }}>Conteúdo do prompt</div>
+                      <div style={{ background:'rgba(255,255,255,.04)', borderRadius:10, padding:'12px', maxHeight:230, overflowY:'auto' }}>
+                        <p style={{ color:'#d1d5db', fontSize:12, lineHeight:1.7 }}>{resolvePrompt(item) || '—'}</p>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Navegação */}
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:14, marginTop:16 }}>
+                <button onClick={() => navModal(-1)} disabled={modal === 0}
+                  style={{ background:'rgba(255,255,255,.07)', border:'none', borderRadius:6, color: modal===0 ? '#374151' : '#9ca3af', fontSize:18, cursor: modal===0 ? 'default':'pointer', padding:'3px 12px' }}>‹</button>
+                <span style={{ color:'#9ca3af', fontSize:12 }}>{modal+1}/{total}</span>
+                <button onClick={() => navModal(1)} disabled={modal === total-1}
+                  style={{ background:'rgba(255,255,255,.07)', border:'none', borderRadius:6, color: modal===total-1 ? '#374151' : '#9ca3af', fontSize:18, cursor: modal===total-1 ? 'default':'pointer', padding:'3px 12px' }}>›</button>
+              </div>
+            </div>
+          )
+        })()}
+      </div>
+
+      {/* Timeline */}
+      <EditorTimeline
+        items={currentItems}
+        selectedIdx={selectedIdx}
+        onSelect={openModal}
+        color={color}
+        fileName={fileName}
+      />
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════
 // 🏠 DASHBOARD PRINCIPAL
 // ══════════════════════════════════════════════════════
 export default function Dashboard({ onBack }) {
@@ -1418,13 +1680,16 @@ export default function Dashboard({ onBack }) {
             </div>
           )}
 
-          {/* ══ ABA 1: EDITOR — em breve ══ */}
+          {/* ══ ABA 1: EDITOR ══ */}
           {activeTab === 1 && (
-            <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:'72px 24px', textAlign:'center', animation:'fadeUp .4s ease' }}>
-              <div style={{ fontSize:48, marginBottom:16 }}>🎛️</div>
-              <div style={{ color:'#fff', fontSize:16, fontWeight:600, marginBottom:8 }}>Editor — Em breve</div>
-              <div style={{ color:'#6b7280', fontSize:13 }}>Shotlist, imagens e vídeos individuais</div>
-            </div>
+            <EditorPanel
+              scenes={jobStatus?.scenes}
+              completedClips={completedClips}
+              jobStatus={jobStatus}
+              onEditScene={sc => setEditModal({ item: sc, type: 'scene' })}
+              onEditClip={handleEditClip}
+              fileName={fileName}
+            />
           )}
 
           {/* ══ ABA 2: TELA — conteúdo original do Canvas ══ */}
