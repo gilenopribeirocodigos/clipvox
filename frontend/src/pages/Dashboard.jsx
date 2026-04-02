@@ -1078,6 +1078,7 @@ export default function Dashboard({ onBack }) {
   const [lipSyncClips,   setLipSyncClips]   = useState(null)
   const [cancelled,      setCancelled]      = useState(false)
   const [editModal,      setEditModal]      = useState(null)
+  const [activeTab,      setActiveTab]      = useState(2) // 0=Resultado 1=Editor 2=Tela
   const pollRef = useRef()
 
   useEffect(() => {
@@ -1129,6 +1130,10 @@ export default function Dashboard({ onBack }) {
     // ✅ FIX C: atualiza lipSyncClips se houver regen individual em andamento
     if (jobStatus.lipsync_clips) {
       setLipSyncClips(jobStatus.lipsync_clips)
+    }
+    // Vai para aba Resultado automaticamente quando merge concluir
+    if (jobStatus.merge_status === 'completed' && jobStatus.merge_url) {
+      setActiveTab(0)
     }
   }, [jobStatus])
 
@@ -1333,11 +1338,97 @@ export default function Dashboard({ onBack }) {
         <LeftPanel fileName={fileName} jobStatus={jobStatus} onReset={reset} />
 
         <div style={{ flex:1, minWidth:0 }}>
+          {/* ── 3 ABAS FUNCIONAIS ── */}
           <div style={{ display:'flex', gap:6, marginBottom:18 }}>
-            {['Results','Canvas'].map((tab,i) => (
-              <div key={tab} style={{ padding:'7px 16px', borderRadius:8, fontSize:13, fontWeight:500, cursor:'pointer', background: i===1 ? 'rgba(249,115,22,.1)' : 'rgba(255,255,255,.04)', border: i===1 ? '1px solid rgba(249,115,22,.25)' : '1px solid rgba(255,255,255,.06)', color: i===1 ? '#f97316' : '#6b7280' }}>{tab}</div>
+            {[
+              { label:'Resultado', icon:'🎬', idx:0 },
+              { label:'Editor',    icon:'🎛️', idx:1 },
+              { label:'Tela',      icon:'🗺️', idx:2 },
+            ].map(({ label, icon, idx }) => (
+              <div key={idx} onClick={() => setActiveTab(idx)}
+                style={{
+                  padding:'7px 16px', borderRadius:8, fontSize:13, fontWeight:500, cursor:'pointer',
+                  display:'flex', alignItems:'center', gap:6,
+                  background: activeTab===idx ? 'rgba(249,115,22,.1)' : 'rgba(255,255,255,.04)',
+                  border: activeTab===idx ? '1px solid rgba(249,115,22,.3)' : '1px solid rgba(255,255,255,.06)',
+                  color: activeTab===idx ? '#f97316' : '#6b7280',
+                  transition:'all .2s'
+                }}>
+                <span>{icon}</span><span>{label}</span>
+              </div>
             ))}
           </div>
+
+          {/* ══ ABA 0: RESULTADO ══ */}
+          {activeTab === 0 && (
+            <div style={{ display:'flex', flexDirection:'column', gap:16, animation:'fadeUp .4s ease' }}>
+              {jobStatus?.merge_url ? (
+                /* Vídeo final disponível */
+                <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(34,197,94,.2)', borderRadius:16, overflow:'hidden' }}>
+                  <div style={{ padding:'14px 20px', display:'flex', alignItems:'center', justifyContent:'space-between', borderBottom:'1px solid rgba(255,255,255,.06)' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                      <span style={{ fontSize:20 }}>🎉</span>
+                      <div>
+                        <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:14, letterSpacing:2, color:'#fff' }}>VIDEOCLIPE FINAL</div>
+                        <div style={{ color:'#22c55e', fontSize:11 }}>Pronto para download e publicação</div>
+                      </div>
+                    </div>
+                    <div style={{ display:'flex', gap:8 }}>
+                      <a href={jobStatus.merge_url} target="_blank" rel="noreferrer"
+                        style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'8px 16px', background:'rgba(34,197,94,.1)', border:'1px solid rgba(34,197,94,.3)', color:'#22c55e', borderRadius:10, fontSize:12, fontWeight:600, textDecoration:'none' }}>
+                        ▶ Assistir
+                      </a>
+                      <a href={jobStatus.merge_url} download={`clipvox_${jobId}.mp4`}
+                        style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'8px 16px', background:'rgba(249,115,22,.1)', border:'1px solid rgba(249,115,22,.3)', color:'#f97316', borderRadius:10, fontSize:12, fontWeight:600, textDecoration:'none' }}>
+                        ⬇ Baixar MP4
+                      </a>
+                    </div>
+                  </div>
+                  <video src={jobStatus.merge_url} controls style={{ width:'100%', display:'block', maxHeight:480, background:'#000' }} />
+                  <div style={{ padding:'12px 20px', display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
+                    {[
+                      { label:'🎵 Música',  value: jobStatus.audio_filename || fileName },
+                      { label:'⏱️ Duração', value: jobStatus.audio_duration ? `${Math.floor(jobStatus.audio_duration/60)}:${String(Math.floor(jobStatus.audio_duration%60)).padStart(2,'0')}` : '—' },
+                      { label:'🎬 Cenas',   value: `${jobStatus.scenes?.length || 0} cenas geradas` },
+                    ].map((item, i) => (
+                      <div key={i} style={{ background:'rgba(255,255,255,.04)', borderRadius:10, padding:'10px 12px' }}>
+                        <div style={{ color:'#6b7280', fontSize:10, marginBottom:3 }}>{item.label}</div>
+                        <div style={{ color:'#fff', fontSize:12, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                /* Ainda em produção */
+                <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:'72px 24px', textAlign:'center' }}>
+                  <div style={{ fontSize:52, marginBottom:16 }}>🎬</div>
+                  <div style={{ color:'#fff', fontSize:16, fontWeight:600, marginBottom:8 }}>Videoclipe em produção</div>
+                  <div style={{ color:'#6b7280', fontSize:13, marginBottom:6 }}>Acompanhe o progresso na aba <strong style={{ color:'#f97316' }}>Tela</strong></div>
+                  <div style={{ color:'#4b5563', fontSize:12 }}>O vídeo final aparecerá aqui após o Merge Final</div>
+                  {jobStatus?.current_step && (
+                    <div style={{ marginTop:20, display:'inline-flex', alignItems:'center', gap:8, background:'rgba(249,115,22,.08)', border:'1px solid rgba(249,115,22,.2)', borderRadius:8, padding:'8px 16px' }}>
+                      <div style={{ width:8, height:8, borderRadius:'50%', background:'#f97316', animation:'pulse 1.4s ease infinite' }} />
+                      <span style={{ color:'#f97316', fontSize:12 }}>
+                        {({'plan':'Planejando...','analyzing':'Analisando áudio...','creative':'Gerando conceito...','scenes':'Gerando imagens...','segments':'Gerando vídeos...','merge':'Merge final...'})[jobStatus.current_step] || 'Processando...'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ══ ABA 1: EDITOR — em breve ══ */}
+          {activeTab === 1 && (
+            <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:'72px 24px', textAlign:'center', animation:'fadeUp .4s ease' }}>
+              <div style={{ fontSize:48, marginBottom:16 }}>🎛️</div>
+              <div style={{ color:'#fff', fontSize:16, fontWeight:600, marginBottom:8 }}>Editor — Em breve</div>
+              <div style={{ color:'#6b7280', fontSize:13 }}>Shotlist, imagens e vídeos individuais</div>
+            </div>
+          )}
+
+          {/* ══ ABA 2: TELA — conteúdo original do Canvas ══ */}
+          {activeTab === 2 && (<>
 
           {!jobStatus && (
             <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:'56px 24px', textAlign:'center' }}>
@@ -1358,7 +1449,6 @@ export default function Dashboard({ onBack }) {
           {jobStatus?.scenes && (
             <div style={{ marginTop:16 }}>
               <ScenesGrid scenes={jobStatus.scenes} jobId={jobId}
-                // ✅ FIX A: passa cena diretamente — SceneEditModal usará resolvePrompt
                 onEditScene={sc => setEditModal({ item: sc, type: 'scene' })} />
             </div>
           )}
@@ -1370,7 +1460,6 @@ export default function Dashboard({ onBack }) {
                 jobStatus={jobStatus}
                 onVideosCompleted={handleVideosCompleted}
                 onCancel={handleCancel}
-                // ✅ FIX A: enriquece clip com prompt da cena ao abrir modal
                 onEditClip={handleEditClip}
               />
 
@@ -1381,13 +1470,11 @@ export default function Dashboard({ onBack }) {
                   onLipSyncCompleted={handleLipSyncCompleted}
                   initialLipSyncStatus={jobStatus?.lipsync_status}
                   onCancel={handleCancel}
-                  // ✅ FIX B: passa handler e clips para o painel de lip sync
                   onRetrySyncClip={handleRetrySyncClip}
                   lipSyncClips={lipSyncClips}
                 />
               )}
 
-              {/* ✅ Mostra LipSyncPanel em estado completed para mostrar retry de cenas que falharam */}
               {lipSyncDone && lipSyncClips?.some(c => c.lipsync_error) && (
                 <LipSyncPanel
                   jobId={jobId}
@@ -1415,6 +1502,8 @@ export default function Dashboard({ onBack }) {
               <button onClick={reset} style={{ background:'rgba(255,255,255,.06)', color:'#fff', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'10px 24px', fontSize:14, cursor:'pointer' }}>🔄 Tentar Novamente</button>
             </div>
           )}
+
+          </>)}
         </div>
       </div>
 
