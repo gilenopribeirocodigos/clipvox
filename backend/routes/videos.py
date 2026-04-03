@@ -12,7 +12,10 @@ from services.ai_concept import generate_creative_concept_with_prompts
 from services.video_generation import generate_scenes_batch
 from services.kling_video import generate_videos_batch
 from services.merge_video import merge_clips_with_audio, MERGE_OUTPUT_DIR
-from services.kling_lipsync import generate_lipsync
+# ✅ MUDANÇA 1: kling_lipsync substituído por synclabs_lipsync
+# Sync Labs (fal-ai/sync-lipsync) é especializado em lip sync para música/canto,
+# aceita o áudio COMPLETO sem precisar extrair vocals (elimina StemSplit.io).
+from services.synclabs_lipsync import generate_lipsync
 
 router  = APIRouter()
 
@@ -176,10 +179,10 @@ async def regen_scene_image(
     scenes = job.get("scenes") or []
     scene  = next((s for s in scenes if s.get("scene_number") == scene_number), None)
     if not scene:
-        raise HTTPException(404, f"Cena {scene_number} não encontrada")
+        raise HTTPException(404, f"Cena {scene_number} nao encontrada")
     final_prompt = prompt.strip() or scene.get("prompt", "")
     if not final_prompt:
-        raise HTTPException(400, "Prompt não encontrado para esta cena")
+        raise HTTPException(400, "Prompt nao encontrado para esta cena")
     background_tasks.add_task(process_regen_scene, job_id=job_id,
                                scene_number=scene_number, prompt=final_prompt)
     return {"job_id": job_id, "scene_number": scene_number, "status": "regenerating",
@@ -201,23 +204,19 @@ async def regen_video_clip(
     scenes = job.get("scenes") or []
     scene  = next((s for s in scenes if s.get("scene_number") == scene_number), None)
     if not scene or not scene.get("image_url"):
-        raise HTTPException(404, f"Cena {scene_number} sem imagem disponível")
+        raise HTTPException(404, f"Cena {scene_number} sem imagem disponivel")
     background_tasks.add_task(process_regen_video, job_id=job_id,
                                scene_number=scene_number, scene=scene, mode=mode)
     return {"job_id": job_id, "scene_number": scene_number, "status": "regenerating",
-            "message": f"Regenerando vídeo da cena {scene_number}..."}
+            "message": f"Regenerando video da cena {scene_number}..."}
 
 
-# ══════════════════════════════════════════════════════
-# ✅ NOVO: Refazer lip sync de UMA cena específica
-# ══════════════════════════════════════════════════════
 @router.post("/regen-lipsync/{job_id}/{scene_number}")
 async def regen_lipsync_clip(
     job_id: str, scene_number: int,
     background_tasks: BackgroundTasks,
-    model: str = Form("kling"),
+    model: str = Form("sync"),
 ):
-    """Refaz lip sync de UMA cena específica que falhou — sem reprocessar as outras."""
     if job_id not in jobs_db:
         recovered = load_job(job_id)
         if recovered:
@@ -225,25 +224,13 @@ async def regen_lipsync_clip(
         else:
             raise HTTPException(404, "Job not found")
     job = jobs_db[job_id]
-
-    # Encontra o clipe de vídeo original (precisa do task_id para origin_task_id)
     video_clips = job.get("video_clips") or []
     clip = next((c for c in video_clips if c.get("scene_number") == scene_number), None)
     if not clip or not clip.get("video_url"):
-        raise HTTPException(404, f"Clipe da cena {scene_number} não encontrado")
-
-    # Verifica se áudio ainda existe no servidor (Render /tmp é volátil)
+        raise HTTPException(404, f"Clipe da cena {scene_number} nao encontrado")
     audio_path = job.get("audio_path")
     if not audio_path or not os.path.exists(audio_path):
-        raise HTTPException(
-            400,
-            "Áudio não encontrado no servidor (Render reiniciou). "
-            "Use o painel de Lip Sync para reenviar o áudio."
-        )
-
-    vocals_path = job.get("vocals_path")
-
-    # Marca a cena como lipsync_regenerating nos lipsync_clips
+        raise HTTPException(400, "Audio nao encontrado no servidor.")
     lipsync_clips = list(jobs_db[job_id].get("lipsync_clips") or [])
     found = any(c.get("scene_number") == scene_number for c in lipsync_clips)
     if found:
@@ -257,14 +244,13 @@ async def regen_lipsync_clip(
         })
     jobs_db[job_id]["lipsync_clips"] = sorted(lipsync_clips, key=lambda x: x.get("scene_number", 0))
     save_job(job_id, jobs_db[job_id])
-
     background_tasks.add_task(
         process_regen_lipsync,
         job_id=job_id, scene_number=scene_number, clip=clip,
-        audio_path=audio_path, vocals_path=vocals_path, model=model,
+        audio_path=audio_path, model=model,
     )
     return {"job_id": job_id, "scene_number": scene_number,
-            "status": "processing", "message": f"Refazendo lip sync da cena {scene_number}..."}
+            "status": "processing", "message": f"Refazendo lip sync (Sync Labs) da cena {scene_number}..."}
 
 
 @router.post("/cancel/{job_id}")
@@ -296,9 +282,9 @@ async def retry_failed_clips(job_id: str, background_tasks: BackgroundTasks, mod
         return {"message": "Nenhuma cena com falha encontrada", "job_id": job_id}
     failed_scenes = [s for s in scenes_all if s.get("scene_number") in failed_nums and s.get("image_url")]
     if not failed_scenes:
-        raise HTTPException(400, "Cenas com falha não têm imagens disponíveis para regenerar")
+        raise HTTPException(400, "Cenas com falha nao tem imagens disponiveis para regenerar")
     if job.get("videos_status") == "retrying":
-        return {"message": "Retry já em andamento", "job_id": job_id}
+        return {"message": "Retry ja em andamento", "job_id": job_id}
     jobs_db[job_id]["videos_status"] = "retrying"
     background_tasks.add_task(process_retry_clips, job_id=job_id, failed_scenes=failed_scenes, mode=mode)
     return {"job_id": job_id, "status": "retrying",
@@ -311,7 +297,7 @@ async def generate_lipsync_video(
     job_id: str, background_tasks: BackgroundTasks,
     face_image: Optional[UploadFile] = File(None),
     audio:      Optional[UploadFile] = File(None),
-    face_url:   str = Form(""), model: str = Form("kling"),
+    face_url:   str = Form(""), model: str = Form("sync"),
 ):
     if job_id not in jobs_db:
         recovered = load_job(job_id)
@@ -320,7 +306,6 @@ async def generate_lipsync_video(
         else:
             raise HTTPException(404, "Job not found")
     job = jobs_db[job_id]
-
     if audio and audio.filename:
         audio_filename = f"{job_id}_{audio.filename}"
         audio_path     = os.path.join(UPLOAD_DIR, audio_filename)
@@ -333,7 +318,6 @@ async def generate_lipsync_video(
         audio_path = job.get("audio_path")
         if not audio_path or not os.path.exists(audio_path):
             raise HTTPException(400, "Audio do job nao encontrado")
-
     face_source = None
     if face_image:
         face_path = os.path.join(UPLOAD_DIR, f"{job_id}_lipsync_face_{face_image.filename}")
@@ -353,22 +337,19 @@ async def generate_lipsync_video(
             face_source = first_scene_url
         else:
             raise HTTPException(400, "Nenhuma imagem do personagem encontrada.")
-
     if job.get("lipsync_status") == "processing":
         return {"message": "Lip sync ja em andamento", "job_id": job_id}
-
     video_clips = job.get("video_clips", [])
     successful  = [c for c in video_clips if c.get("success") and c.get("video_url")]
-
     jobs_db[job_id]["lipsync_status"] = "processing"
     jobs_db[job_id]["lipsync_url"]    = None
     jobs_db[job_id]["lipsync_clips"]  = None
-
-    background_tasks.add_task(_preextract_and_lipsync, job_id=job_id,
+    # ✅ MUDANCA 2: _run_lipsync (sem _preextract_vocals — Sync Labs nao precisa)
+    background_tasks.add_task(_run_lipsync, job_id=job_id,
                                face_source=face_source, audio_path=audio_path, model=model)
     return {"job_id": job_id, "status": "processing",
-            "message": f"Lip sync iniciado em {len(successful)} clipe(s)",
-            "total_clips": len(successful), "model": model}
+            "message": f"Sync Labs Lip Sync iniciado em {len(successful)} clipe(s)",
+            "total_clips": len(successful), "model": "fal-ai/sync-lipsync"}
 
 
 @router.post("/merge/{job_id}")
@@ -411,9 +392,8 @@ async def download_merged_video(job_id: str):
                         filename=f"clipvox_{job_id}.mp4")
 
 
-# ═══════════════════════════════════════════════════════════════
 # BACKGROUND TASKS
-# ═══════════════════════════════════════════════════════════════
+
 def process_video_pipeline(job_id: str):
     job = jobs_db[job_id]
     try:
@@ -433,10 +413,7 @@ def process_video_pipeline(job_id: str):
         job["total_scenes"] = scene_structure["total_scenes"]
         update_job(job_id, progress=28)
         update_job(job_id, progress=30, current_step="creative")
-
-        print("Extraindo vocals com StemSplit.io...")
-        _preextract_vocals(job_id)
-
+        # ✅ MUDANCA 3: removido _preextract_vocals — Sync Labs nao precisa
         creative_concept = generate_creative_concept_with_prompts(
             audio_metadata, scene_structure, job["description"], job["style"]
         )
@@ -451,23 +428,14 @@ def process_video_pipeline(job_id: str):
             reference_image_paths=job.get("ref_image_paths") or [], job_id=job_id,
         )
         job["scenes"] = scenes_with_images
-        scenes_generated = sum(1 for s in scenes_with_images if s.get("success", False))
         jobs_db[job_id]["scenes"] = scenes_with_images
-
-        # ✅ Normaliza campo 'prompt' — garante que o frontend sempre encontre
-        # independente do nome usado internamente pelo ai_concept/video_generation
         for scene in jobs_db[job_id]["scenes"]:
             if not scene.get("prompt"):
                 scene["prompt"] = (
-                    scene.get("visual_prompt") or
-                    scene.get("image_prompt") or
-                    scene.get("prompt_used") or
-                    scene.get("visual_description") or
-                    scene.get("scene_description") or
-                    scene.get("description") or
-                    ""
+                    scene.get("visual_prompt") or scene.get("image_prompt") or
+                    scene.get("prompt_used") or scene.get("visual_description") or
+                    scene.get("scene_description") or scene.get("description") or ""
                 )
-
         try:
             save_job(job_id, jobs_db[job_id])
         except Exception as _e:
@@ -476,8 +444,7 @@ def process_video_pipeline(job_id: str):
         segments = scene_structure["segments"]
         for segment in segments:
             segment["scenes_with_images"] = [
-                s for s in scenes_with_images
-                if s.get("scene_number") in segment.get("scenes", [])
+                s for s in scenes_with_images if s.get("scene_number") in segment.get("scenes", [])
             ]
         job["segments"] = segments
         update_job(job_id, progress=95)
@@ -492,12 +459,10 @@ def process_video_pipeline(job_id: str):
 
 def process_video_clips(job_id: str, mode: str = "std"):
     job = jobs_db.get(job_id)
-    if not job:
-        return
+    if not job: return
     if jobs_db.get(job_id, {}).get("cancelled"):
         jobs_db[job_id]["videos_status"] = "cancelled"
-        save_job(job_id, jobs_db[job_id])
-        return
+        save_job(job_id, jobs_db[job_id]); return
     try:
         scenes       = job.get("scenes", [])
         valid_scenes = [s for s in scenes if s.get("success", False) and s.get("image_url")]
@@ -518,20 +483,17 @@ def process_video_clips(job_id: str, mode: str = "std"):
 
 def process_retry_clips(job_id: str, failed_scenes: list, mode: str = "std"):
     job = jobs_db.get(job_id)
-    if not job:
-        return
+    if not job: return
     try:
         if jobs_db.get(job_id, {}).get("cancelled"):
-            jobs_db[job_id]["videos_status"] = "cancelled"
-            return
+            jobs_db[job_id]["videos_status"] = "cancelled"; return
         new_results = generate_videos_batch(
             scenes=failed_scenes, bpm=job.get("audio_bpm", 120),
             aspect_ratio=job.get("aspect_ratio", "16:9"),
             mode=mode, job_id=job_id, version="2.1",
         )
         existing = {c["scene_number"]: c for c in (job.get("video_clips") or [])}
-        for r in new_results:
-            existing[r["scene_number"]] = r
+        for r in new_results: existing[r["scene_number"]] = r
         merged = sorted(existing.values(), key=lambda x: x.get("scene_number", 0))
         jobs_db[job_id]["video_clips"]   = merged
         jobs_db[job_id]["videos_status"] = "completed"
@@ -545,16 +507,13 @@ def process_retry_clips(job_id: str, failed_scenes: list, mode: str = "std"):
 def process_regen_scene(job_id: str, scene_number: int, prompt: str):
     try:
         job = jobs_db.get(job_id, {})
-        if job.get("cancelled"):
-            return
+        if job.get("cancelled"): return
         from services.video_generation import generate_scene_image
         scenes = jobs_db[job_id].get("scenes") or []
         for s in scenes:
-            if s.get("scene_number") == scene_number:
-                s["regenerating"] = True
+            if s.get("scene_number") == scene_number: s["regenerating"] = True
         jobs_db[job_id]["scenes"] = scenes
         save_job(job_id, jobs_db[job_id])
-
         result = generate_scene_image(
             prompt=prompt, scene_number=scene_number,
             style=job.get("style", "realistic"), aspect_ratio=job.get("aspect_ratio", "16:9"),
@@ -563,34 +522,27 @@ def process_regen_scene(job_id: str, scene_number: int, prompt: str):
         scenes = jobs_db[job_id].get("scenes") or []
         for i, s in enumerate(scenes):
             if s.get("scene_number") == scene_number:
-                result["prompt"] = prompt
-                result["regenerating"] = False
-                scenes[i] = result
-                break
+                result["prompt"] = prompt; result["regenerating"] = False; scenes[i] = result; break
         jobs_db[job_id]["scenes"] = scenes
         save_job(job_id, jobs_db[job_id])
     except Exception as e:
         import traceback; traceback.print_exc()
         scenes = jobs_db.get(job_id, {}).get("scenes") or []
         for s in scenes:
-            if s.get("scene_number") == scene_number:
-                s["regenerating"] = False
+            if s.get("scene_number") == scene_number: s["regenerating"] = False
         save_job(job_id, jobs_db[job_id])
 
 
 def process_regen_video(job_id: str, scene_number: int, scene: dict, mode: str):
     try:
         job = jobs_db.get(job_id, {})
-        if job.get("cancelled"):
-            return
+        if job.get("cancelled"): return
         from services.kling_video import generate_video_clip
         clips = jobs_db[job_id].get("video_clips") or []
         for c in clips:
-            if c.get("scene_number") == scene_number:
-                c["regenerating"] = True
+            if c.get("scene_number") == scene_number: c["regenerating"] = True
         jobs_db[job_id]["video_clips"] = clips
         save_job(job_id, jobs_db[job_id])
-
         result = generate_video_clip(
             scene=scene, bpm=job.get("audio_bpm", 120),
             aspect_ratio=job.get("aspect_ratio", "16:9"), mode=mode, job_id=job_id
@@ -599,104 +551,69 @@ def process_regen_video(job_id: str, scene_number: int, scene: dict, mode: str):
         found = False
         for i, c in enumerate(clips):
             if c.get("scene_number") == scene_number:
-                result["regenerating"] = False
-                clips[i] = result
-                found = True
-                break
+                result["regenerating"] = False; clips[i] = result; found = True; break
         if not found:
-            result["regenerating"] = False
-            clips.append(result)
+            result["regenerating"] = False; clips.append(result)
         jobs_db[job_id]["video_clips"] = sorted(clips, key=lambda x: x.get("scene_number", 0))
         save_job(job_id, jobs_db[job_id])
     except Exception as e:
         import traceback; traceback.print_exc()
         clips = jobs_db.get(job_id, {}).get("video_clips") or []
         for c in clips:
-            if c.get("scene_number") == scene_number:
-                c["regenerating"] = False
+            if c.get("scene_number") == scene_number: c["regenerating"] = False
         save_job(job_id, jobs_db[job_id])
 
 
-# ══════════════════════════════════════════════════════
-# ✅ NOVO: Refaz lip sync de UMA cena específica
-# ══════════════════════════════════════════════════════
-def process_regen_lipsync(job_id: str, scene_number: int, clip: dict,
-                           audio_path: str, vocals_path: str, model: str):
-    """Refaz lip sync de uma única cena e atualiza lipsync_clips."""
+def process_regen_lipsync(job_id: str, scene_number: int, clip: dict, audio_path: str, model: str):
+    """Sync Labs: refaz lip sync de 1 cena usando audio original, sem StemSplit."""
     try:
         face_video_url = clip.get("kling_url") or clip.get("video_url")
         origin_task_id = clip.get("task_id", "")
         clip_job_id    = f"{job_id}_scene{scene_number:03d}"
-        print(f"🎤 Refazendo lip sync cena {scene_number} — job {job_id[:8]}...")
-
-        # Se vocals não existe mais no disco, tenta extrair novamente
-        if not vocals_path or not os.path.exists(str(vocals_path)):
-            print(f"   ⚠️ vocals_path ausente — extraindo com StemSplit...")
-            _preextract_vocals(job_id)
-            vocals_path = jobs_db.get(job_id, {}).get("vocals_path")
-
+        print(f"🎤 Sync Labs regen cena {scene_number}...")
         result = generate_lipsync(
             face_source=face_video_url, audio_source=audio_path,
-            job_id=clip_job_id, model=model,
-            preextracted_vocals=vocals_path, origin_task_id=origin_task_id,
+            job_id=clip_job_id, model=model, origin_task_id=origin_task_id,
         )
-
         if result["success"]:
-            new_clip = {
-                "success": True, "scene_number": scene_number,
-                "video_url": result["video_url"], "original_url": face_video_url,
-                "lipsync_regenerating": False,
-                "lipsync_error": None, "lipsync_error_type": None,
-            }
-            print(f"   ✅ Cena {scene_number} sincronizada com sucesso")
+            new_clip = {"success": True, "scene_number": scene_number,
+                        "video_url": result["video_url"], "original_url": face_video_url,
+                        "lipsync_regenerating": False, "lipsync_error": None, "lipsync_error_type": None}
+            print(f"   ✅ Cena {scene_number} OK")
         else:
             raw = result.get("error", "") or ""
-            if "no face" in raw.lower() or "609" in raw or "identify failed" in raw.lower():
-                msg, etype = "Sem rosto detectado — regenere a imagem com rosto frontal", "no_face"
-            elif "proxy" in raw.lower() or "proxyconnect" in raw.lower():
-                msg, etype = "Erro de conexão — tente novamente mais tarde", "proxy"
-            elif "service busy" in raw.lower() or "500 service" in raw.lower():
-                msg, etype = "Serviço de lip sync indisponível — tente novamente mais tarde", "busy"
-            elif "cancelled" in raw.lower():
-                msg, etype = "Cancelado pelo usuário", "cancelled"
+            if "no face" in raw.lower() or "609" in raw:
+                msg, etype = "Sem rosto detectado", "no_face"
+            elif "proxy" in raw.lower():
+                msg, etype = "Erro de conexao", "proxy"
+            elif "service busy" in raw.lower():
+                msg, etype = "Servico indisponivel", "busy"
             else:
-                msg, etype = "Falha no lip sync — tente novamente", "unknown"
-            new_clip = {
-                "success": True, "scene_number": scene_number,
-                "video_url": clip.get("video_url"), "original_url": face_video_url,
-                "lipsync_error": msg, "lipsync_error_type": etype,
-                "lipsync_regenerating": False,
-            }
-            print(f"   ❌ Cena {scene_number} falhou novamente ({etype})")
-
+                msg, etype = "Falha no lip sync", "unknown"
+            new_clip = {"success": True, "scene_number": scene_number,
+                        "video_url": clip.get("video_url"), "original_url": face_video_url,
+                        "lipsync_error": msg, "lipsync_error_type": etype, "lipsync_regenerating": False}
         lipsync_clips = list(jobs_db[job_id].get("lipsync_clips") or [])
         updated = False
         for i, c in enumerate(lipsync_clips):
             if c.get("scene_number") == scene_number:
-                lipsync_clips[i] = new_clip
-                updated = True
-                break
-        if not updated:
-            lipsync_clips.append(new_clip)
-
+                lipsync_clips[i] = new_clip; updated = True; break
+        if not updated: lipsync_clips.append(new_clip)
         jobs_db[job_id]["lipsync_clips"] = sorted(lipsync_clips, key=lambda x: x.get("scene_number", 0))
         save_job(job_id, jobs_db[job_id])
-
     except Exception as e:
         import traceback; traceback.print_exc()
         lipsync_clips = list(jobs_db.get(job_id, {}).get("lipsync_clips") or [])
         for c in lipsync_clips:
             if c.get("scene_number") == scene_number:
-                c["lipsync_regenerating"] = False
-                c["lipsync_error"] = "Erro inesperado — tente novamente"
+                c["lipsync_regenerating"] = False; c["lipsync_error"] = "Erro inesperado"
         jobs_db[job_id]["lipsync_clips"] = lipsync_clips
         save_job(job_id, jobs_db[job_id])
 
 
-def _preextract_and_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
-    if jobs_db.get(job_id, {}).get("cancelled"):
-        return
-    _preextract_vocals(job_id)
+def _run_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
+    """Substitui _preextract_and_lipsync — sem extração de vocals."""
+    if jobs_db.get(job_id, {}).get("cancelled"): return
     process_lipsync(job_id=job_id, face_source=face_source, audio_path=audio_path, model=model)
 
 
@@ -713,18 +630,9 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
         return
     if jobs_db.get(job_id, {}).get("cancelled"):
         jobs_db[job_id]["lipsync_status"] = "cancelled"
-        save_job(job_id, jobs_db[job_id])
-        return
-
-    vocals_path = jobs_db.get(job_id, {}).get("vocals_path")
-    if not vocals_path:
-        for _ in range(18):
-            time.sleep(10)
-            vocals_path = jobs_db.get(job_id, {}).get("vocals_path")
-            if vocals_path:
-                break
-
+        save_job(job_id, jobs_db[job_id]); return
     total = len(successful_clips)
+    print(f"🎤 Sync Labs: {total} clipes, audio original (sem StemSplit)...")
 
     def _process_clip(args):
         i, clip = args
@@ -734,27 +642,20 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
         if jobs_db.get(job_id, {}).get("cancelled"):
             return {"success": False, "scene_number": scene_num,
                     "video_url": clip.get("video_url"), "lipsync_error": "cancelled"}
-        origin_task_id = clip.get("task_id", "")
-        print(f"🎤 Lip sync clipe {scene_num}/{total}...")
+        print(f"🎤 Sync Labs clipe {scene_num}/{total}...")
         result = generate_lipsync(
             face_source=face_video_url, audio_source=audio_path,
-            job_id=clip_job_id, model=model,
-            preextracted_vocals=vocals_path, origin_task_id=origin_task_id,
+            job_id=clip_job_id, model=model, origin_task_id=clip.get("task_id", ""),
         )
         if result["success"]:
             return {"success": True, "scene_number": scene_num,
                     "video_url": result["video_url"], "original_url": face_video_url}
         raw = result.get("error", "") or ""
-        if "no face" in raw.lower() or "609" in raw or "identify failed" in raw.lower():
-            msg, etype = "Sem rosto detectado — regenere a imagem", "no_face"
-        elif "proxy" in raw.lower() or "proxyconnect" in raw.lower():
-            msg, etype = "Erro de conexão — tente regenerar o lip sync desta cena", "proxy"
-        elif "service busy" in raw.lower() or "500 service" in raw.lower():
-            msg, etype = "Serviço de lip sync indisponível — tente novamente mais tarde", "busy"
-        elif "cancelled" in raw.lower():
-            msg, etype = "Cancelado pelo usuário", "cancelled"
-        else:
-            msg, etype = "Falha no lip sync — tente regenerar", "unknown"
+        if "no face" in raw.lower() or "609" in raw:    msg, etype = "Sem rosto detectado", "no_face"
+        elif "proxy" in raw.lower():                     msg, etype = "Erro de conexao", "proxy"
+        elif "service busy" in raw.lower():              msg, etype = "Servico indisponivel", "busy"
+        elif "cancelled" in raw.lower():                 msg, etype = "Cancelado", "cancelled"
+        else:                                            msg, etype = "Falha no lip sync", "unknown"
         return {"success": True, "scene_number": scene_num,
                 "video_url": clip.get("video_url"), "original_url": face_video_url,
                 "lipsync_error": msg, "lipsync_error_type": etype}
@@ -763,29 +664,26 @@ def process_lipsync(job_id: str, face_source: str, audio_path: str, model: str):
     with ThreadPoolExecutor(max_workers=1) as executor:
         futures = {executor.submit(_process_clip, (i, c)): i for i, c in enumerate(successful_clips)}
         for future in as_completed(futures):
-            r = future.result()
-            results_map[r["scene_number"]] = r
+            r = future.result(); results_map[r["scene_number"]] = r
 
     lipsync_clips = [results_map[k] for k in sorted(results_map)]
     success_count = sum(1 for c in lipsync_clips if not c.get("lipsync_error"))
     jobs_db[job_id]["lipsync_clips"]  = lipsync_clips
     jobs_db[job_id]["lipsync_status"] = "completed"
     first_ok = next((c for c in lipsync_clips if c.get("success")), None)
-    if first_ok:
-        jobs_db[job_id]["lipsync_url"] = first_ok["video_url"]
-    print(f"Lip sync: {success_count}/{total} clipes sincronizados")
+    if first_ok: jobs_db[job_id]["lipsync_url"] = first_ok["video_url"]
+    print(f"✅ Sync Labs: {success_count}/{total} clipes sincronizados")
     save_job(job_id, jobs_db[job_id])
 
 
 def process_merge(job_id: str):
     job = jobs_db.get(job_id)
-    if not job:
-        return
+    if not job: return
     try:
-        clips    = job.get("lipsync_clips") or job.get("video_clips", [])
-        success  = sorted([c for c in clips if c.get("success") and c.get("video_url")],
-                          key=lambda x: x.get("scene_number", 0))
-        result   = merge_clips_with_audio(
+        clips   = job.get("lipsync_clips") or job.get("video_clips", [])
+        success = sorted([c for c in clips if c.get("success") and c.get("video_url")],
+                         key=lambda x: x.get("scene_number", 0))
+        result  = merge_clips_with_audio(
             video_urls=[c["video_url"] for c in success],
             audio_path=job.get("audio_path"), job_id=job_id
         )
@@ -801,38 +699,6 @@ def process_merge(job_id: str):
         import traceback; traceback.print_exc()
         jobs_db[job_id]["merge_status"] = "failed"
         jobs_db[job_id]["merge_error"]  = str(e)
-
-
-def _preextract_vocals(job_id: str):
-    try:
-        job = jobs_db.get(job_id, {})
-        if job.get("cancelled"):
-            return
-        audio_path = job.get("audio_path")
-        if not audio_path or not os.path.exists(audio_path):
-            return
-        duration_str = job.get("duration", "full")
-        if duration_str and duration_str != "full":
-            try:
-                duration_sec = int(duration_str)
-                trimmed_path = audio_path.rsplit(".", 1)[0] + f"_trim{duration_sec}s.mp3"
-                import subprocess
-                r = subprocess.run([
-                    "ffmpeg", "-y", "-i", audio_path, "-t", str(duration_sec),
-                    "-acodec", "libmp3lame", "-ab", "192k", trimmed_path
-                ], capture_output=True, text=True, timeout=60)
-                if r.returncode == 0 and os.path.exists(trimmed_path):
-                    audio_path = trimmed_path
-            except Exception as te:
-                print(f"⚠️ Erro ao trimar áudio: {te}")
-        from services.stemsplit_vocals import extract_vocals
-        vocals_path = extract_vocals(audio_path, job_id)
-        if vocals_path:
-            jobs_db[job_id]["vocals_path"] = vocals_path
-        else:
-            print("StemSplit falhou — lip sync usara audio original")
-    except Exception as e:
-        print(f"Erro na pre-extracao de vocals: {e}")
 
 
 def update_job(job_id: str, **kwargs):
