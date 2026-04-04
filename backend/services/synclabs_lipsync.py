@@ -199,23 +199,27 @@ def _extract_vocals_demucs(audio_url: str, job_id: str) -> Optional[str]:
                 payload = handler.get()
                 data    = _fal_unwrap(payload)
 
-                # ✅ Estrutura correta: data["stems"]["vocals"]["url"]
-                stems     = data.get("stems") or {}
-                vocals    = stems.get("vocals") or {}
+                # ✅ fal-ai/demucs retorna os stems diretamente na raiz do resultado:
+                # data = { "vocals": {"url":"..."}, "drums": {"url":"..."}, ... }
+                # NÃO está aninhado em data["stems"]["vocals"]
+                vocals    = data.get("vocals") or {}
                 vocal_url = vocals.get("url") if isinstance(vocals, dict) else None
 
-                # Fallback: alguns wrappers retornam flat
+                # Fallback: tenta estrutura aninhada (versões antigas da API)
                 if not vocal_url:
-                    vocal_url = (data.get("vocals_url") or
-                                 data.get("vocal_url"))
+                    stems     = data.get("stems") or {}
+                    vocals_s  = stems.get("vocals") or {}
+                    vocal_url = vocals_s.get("url") if isinstance(vocals_s, dict) else None
+
+                # Fallback 2: campos flat
+                if not vocal_url:
+                    vocal_url = data.get("vocals_url") or data.get("vocal_url")
 
                 if vocal_url:
-                    print(f"   ✅ Demucs vocals: {vocal_url[:80]}")
+                    print(f"   ✅ Demucs vocals extraídos: {vocal_url[:80]}")
                     return vocal_url
 
-                print(f"   ❌ Demucs concluiu mas sem vocal_url. Keys: {list(data.keys())}")
-                if stems:
-                    print(f"   ℹ️  Stems disponíveis: {list(stems.keys())}")
+                print(f"   ❌ Demucs sem vocal_url. Keys disponíveis: {list(data.keys())}")
                 return None
 
             elif status_name in {"FAILED", "ERROR", "CANCELLED"}:
