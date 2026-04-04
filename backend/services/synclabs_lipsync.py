@@ -32,7 +32,7 @@ except Exception:
 
 DEMUCS_ENDPOINT   = "fal-ai/demucs"
 SYNCLABS_ENDPOINT = "fal-ai/sync-lipsync"
-SYNCLABS_MODEL    = "sync-2"      # modelo mais preciso para canto
+SYNCLABS_MODEL    = "lipsync-1.9.0-beta"   # modelo mais recente do fal-ai/sync-lipsync
 
 
 # ══════════════════════════════════════════════════════
@@ -157,10 +157,9 @@ def _extract_vocals_demucs(audio_url: str, job_id: str) -> Optional[str]:
     Chama fal-ai/demucs para separar vocals do resto da música.
     Retorna URL pública dos vocals isolados, ou None se falhar.
 
-    fal-ai/demucs aceita:
-      audio_url  : URL pública do áudio
-      model      : "htdemucs" (padrão, melhor para música)
-      stem       : "vocals"   → retorna só a faixa de voz
+    IMPORTANTE: fal-ai/demucs NÃO aceita parâmetro 'stem' ou 'model'.
+    Retorna todos os stems separados; pegamos vocals do resultado.
+    Resposta: { "stems": { "vocals": {"url":"..."}, "drums": {...}, ... } }
     """
     print(f"   🎵 Demucs: extraindo vocals de {audio_url[:60]}...")
     try:
@@ -168,16 +167,15 @@ def _extract_vocals_demucs(audio_url: str, job_id: str) -> Optional[str]:
             DEMUCS_ENDPOINT,
             arguments={
                 "audio_url": audio_url,
-                "model":     "htdemucs",   # modelo hybrid transformer — melhor qualidade
-                "stem":      "vocals",     # retorna só vocals, sem música instrumental
+                # ✅ Sem 'stem' nem 'model' — a API retorna todos os stems
+                # e pegamos só o 'vocals' do resultado
             },
         )
         request_id = getattr(handler, "request_id", "")
         print(f"   ⏳ Demucs task: {request_id}")
 
-        # Polling Demucs
         start = time.time()
-        timeout = 300   # Demucs é rápido, 5 min é mais que suficiente
+        timeout = 300
         last_log = None
         while time.time() - start < timeout:
             status      = handler.status(with_logs=True)
@@ -201,21 +199,23 @@ def _extract_vocals_demucs(audio_url: str, job_id: str) -> Optional[str]:
                 payload = handler.get()
                 data    = _fal_unwrap(payload)
 
-                # fal-ai/demucs retorna { "stems": { "vocals": { "url": "..." } } }
+                # ✅ Estrutura correta: data["stems"]["vocals"]["url"]
                 stems     = data.get("stems") or {}
                 vocals    = stems.get("vocals") or {}
                 vocal_url = vocals.get("url") if isinstance(vocals, dict) else None
 
-                # Fallback: alguns wrappers retornam flat { "vocals_url": "..." }
+                # Fallback: alguns wrappers retornam flat
                 if not vocal_url:
                     vocal_url = (data.get("vocals_url") or
-                                 data.get("vocal_url") or
-                                 data.get("output_url"))
+                                 data.get("vocal_url"))
 
                 if vocal_url:
                     print(f"   ✅ Demucs vocals: {vocal_url[:80]}")
                     return vocal_url
-                print(f"   ❌ Demucs concluiu mas sem vocal_url. Resposta: {data}")
+
+                print(f"   ❌ Demucs concluiu mas sem vocal_url. Keys: {list(data.keys())}")
+                if stems:
+                    print(f"   ℹ️  Stems disponíveis: {list(stems.keys())}")
                 return None
 
             elif status_name in {"FAILED", "ERROR", "CANCELLED"}:
@@ -243,14 +243,13 @@ def _run_synclabs(video_url: str, audio_url: str,
     sync-2 é o modelo mais recente do Sync Labs — treinado para canto,
     melhor em múltiplos idiomas incluindo português.
     """
-    print(f"   🎤 Sync Labs sync-2: sincronizando lábios...")
+    print(f"   🎤 Sync Labs {SYNCLABS_MODEL}: sincronizando lábios...")
     handler = fal_client.submit(
         SYNCLABS_ENDPOINT,
         arguments={
             "video_url": video_url,
             "audio_url": audio_url,
-            "model":     SYNCLABS_MODEL,   # sync-2 — máxima precisão
-            # sync-2 também aceita "sync-1.6.0" como fallback se necessário
+            "model":     SYNCLABS_MODEL,   # lipsync-1.9.0-beta — mais preciso
         },
     )
     request_id = getattr(handler, "request_id", "")
