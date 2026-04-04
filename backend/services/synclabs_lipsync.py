@@ -32,7 +32,10 @@ except Exception:
 
 DEMUCS_ENDPOINT   = "fal-ai/demucs"
 SYNCLABS_ENDPOINT = "fal-ai/sync-lipsync"
-SYNCLABS_MODEL    = "lipsync-1.9.0-beta"   # modelo mais recente do fal-ai/sync-lipsync
+SYNCLABS_MODEL    = "lipsync-1.8.0"
+# ⚠️  lipsync-1.9.0-beta foi removido: causa artefato de "shimmer/miragem"
+#     na região do queixo/boca por composição agressiva da máscara facial.
+#     lipsync-1.8.0 é o modelo estável com blend suave — sem artefatos de borda.
 
 
 # ══════════════════════════════════════════════════════
@@ -253,7 +256,7 @@ def _run_synclabs(video_url: str, audio_url: str,
         arguments={
             "video_url": video_url,
             "audio_url": audio_url,
-            "model":     SYNCLABS_MODEL,   # lipsync-1.9.0-beta — mais preciso
+            "model":     SYNCLABS_MODEL,   # lipsync-1.8.0 — estável, sem artefatos de borda
         },
     )
     request_id = getattr(handler, "request_id", "")
