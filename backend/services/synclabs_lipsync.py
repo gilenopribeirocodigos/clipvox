@@ -33,9 +33,10 @@ except Exception:
 DEMUCS_ENDPOINT   = "fal-ai/demucs"
 SYNCLABS_ENDPOINT = "fal-ai/sync-lipsync"
 SYNCLABS_MODEL    = "lipsync-1.8.0"
-# ⚠️  lipsync-1.9.0-beta foi removido: causa artefato de "shimmer/miragem"
-#     na região do queixo/boca por composição agressiva da máscara facial.
-#     lipsync-1.8.0 é o modelo estável com blend suave — sem artefatos de borda.
+# ⚠️  lipsync-1.9.0-beta removido do padrão: causa shimmer na região do queixo.
+# Cascata automática: lipsync-1.8.0 → lipsync-1.7.1 → lipsync-1.9.0-beta
+# Se o modelo preferido estiver com downstream_service_unavailable, tenta o próximo.
+SYNCLABS_MODEL_CASCADE = ["lipsync-1.8.0", "lipsync-1.7.1", "lipsync-1.9.0-beta"]
 
 
 # ══════════════════════════════════════════════════════
@@ -247,7 +248,7 @@ def _extract_vocals_demucs(audio_url: str, job_id: str) -> Optional[str]:
 # PASSO 2 — SYNC LABS: lipsync com vocals limpos
 # ══════════════════════════════════════════════════════
 
-# Erros transitórios do Sync Labs que justificam retry
+# Erros transitórios que justificam retry/fallback de modelo
 _RETRYABLE_ERRORS = (
     "downstream_service_unavailable",
     "504",
@@ -255,6 +256,7 @@ _RETRYABLE_ERRORS = (
     "503",
     "gateway timeout",
     "upstream connect error",
+    "downstream service unavailable",
 )
 
 def _is_retryable(error_str: str) -> bool:
@@ -262,35 +264,32 @@ def _is_retryable(error_str: str) -> bool:
     return any(k in low for k in _RETRYABLE_ERRORS)
 
 
-def _run_synclabs(video_url: str, audio_url: str,
-                  timeout: int = FAL_REQUEST_TIMEOUT_SECONDS,
-                  max_retries: int = 3) -> Dict[str, Any]:
+def _try_single_model(video_url: str, audio_url: str, model: str,
+                      timeout: int, max_retries: int) -> Dict[str, Any]:
     """
-    Chama fal-ai/sync-lipsync com retry automático para erros 504/downstream.
-
-    Erros 504 e downstream_service_unavailable são transitórios — o Sync Labs
-    estava sobrecarregado. Reenviar a tarefa resolve na maioria dos casos.
+    Tenta executar o lipsync com UM modelo específico, com retry para 504/downstream.
+    Retorna {"success": True, ...} ou {"success": False, "retryable": bool, ...}
     """
-    last_error = "Sync Labs falhou após todas as tentativas"
+    last_error = f"Modelo {model} falhou"
 
     for attempt in range(1, max_retries + 1):
         if attempt > 1:
-            wait = 10 * attempt   # 20s, 30s entre tentativas
-            print(f"   🔄 Sync Labs retry {attempt}/{max_retries} em {wait}s...")
+            wait = 15 * attempt
+            print(f"      ↩ retry {attempt}/{max_retries} em {wait}s (modelo {model})...")
             time.sleep(wait)
 
         try:
-            print(f"   🎤 Sync Labs {SYNCLABS_MODEL}: sincronizando lábios (tentativa {attempt}/{max_retries})...")
+            print(f"   🎤 Sync Labs [{model}]: tentativa {attempt}/{max_retries}...")
             handler = fal_client.submit(
                 SYNCLABS_ENDPOINT,
                 arguments={
                     "video_url": video_url,
                     "audio_url": audio_url,
-                    "model":     SYNCLABS_MODEL,
+                    "model":     model,
                 },
             )
             request_id = getattr(handler, "request_id", "")
-            print(f"   ⏳ Sync Labs task: {request_id}")
+            print(f"   ⏳ task: {request_id}")
 
             start    = time.time()
             last_log = None
@@ -302,28 +301,28 @@ def _run_synclabs(video_url: str, audio_url: str,
                     elapsed     = int(time.time() - start)
 
                     if isinstance(status, getattr(fal_client, "Queued", tuple())):
-                        print(f"   ⏳ Sync Labs fila pos={getattr(status,'position','?')} ({elapsed}s)")
+                        print(f"   ⏳ fila pos={getattr(status,'position','?')} ({elapsed}s)")
 
                     elif isinstance(status, getattr(fal_client, "InProgress", tuple())):
                         logs = getattr(status, "logs", None) or []
                         if logs:
                             msg = logs[-1].get("message") or str(logs[-1])
                             if msg != last_log:
-                                print(f"   ⏳ Sync Labs: {msg} ({elapsed}s)")
+                                print(f"   ⏳ {msg} ({elapsed}s)")
                                 last_log = msg
                         else:
-                            print(f"   ⏳ Sync Labs processando... ({elapsed}s)")
+                            print(f"   ⏳ processando... ({elapsed}s)")
 
                     elif isinstance(status, getattr(fal_client, "Completed", tuple())) or status_name == "COMPLETED":
                         try:
                             payload = handler.get()
                         except Exception as get_err:
                             err_str = str(get_err)
-                            print(f"   ⚠️ handler.get() erro: {err_str[:120]}")
+                            print(f"   ⚠️ get() erro: {err_str[:120]}")
+                            last_error = err_str
                             if _is_retryable(err_str):
-                                last_error = err_str
-                                break   # sai do while → vai para próximo retry
-                            return {"success": False, "error": err_str}
+                                break   # próximo retry do mesmo modelo
+                            return {"success": False, "retryable": False, "error": err_str}
 
                         data  = _fal_unwrap(payload)
                         video = data.get("video") or {}
@@ -331,49 +330,74 @@ def _run_synclabs(video_url: str, audio_url: str,
                         if not url:
                             url = data.get("output_url") or data.get("video_url")
                         if url:
-                            print(f"   ✅ Sync Labs concluído: {url[:80]}")
-                            return {"success": True, "video_url": url, "task_id": request_id}
-                        return {"success": False, "error": "Sync Labs concluiu sem video.url"}
+                            print(f"   ✅ Sync Labs [{model}] concluído: {url[:80]}")
+                            return {"success": True, "video_url": url,
+                                    "task_id": request_id, "model_used": model}
+                        return {"success": False, "retryable": False,
+                                "error": f"[{model}] concluiu sem video.url"}
 
                     elif status_name in {"FAILED", "ERROR", "CANCELLED"}:
-                        error_msg = None
+                        err_msg = None
                         try:
-                            payload   = handler.get()
-                            data      = _fal_unwrap(payload)
-                            error_msg = data.get("error") or data.get("message")
+                            payload = handler.get()
+                            data    = _fal_unwrap(payload)
+                            err_msg = data.get("error") or data.get("message")
                         except Exception:
                             pass
-                        err = error_msg or f"Sync Labs: {status_name}"
+                        err = err_msg or f"[{model}]: {status_name}"
+                        last_error = err
                         if _is_retryable(err):
-                            last_error = err
-                            break   # tenta novamente
-                        return {"success": False, "error": err}
+                            break   # próximo retry
+                        return {"success": False, "retryable": False, "error": err}
 
                 except Exception as poll_err:
                     err_str = str(poll_err)
-                    print(f"   ⚠️ Sync Labs polling erro: {err_str[:120]}")
+                    print(f"   ⚠️ polling erro: {err_str[:120]}")
+                    last_error = err_str
                     if _is_retryable(err_str):
-                        last_error = err_str
-                        break   # sai do while → próximo retry
-                    return {"success": False, "error": err_str}
+                        break   # próximo retry
+                    return {"success": False, "retryable": False, "error": err_str}
 
                 time.sleep(FAL_POLL_INTERVAL_SECONDS)
             else:
-                # while terminou por timeout (não por break)
-                last_error = f"Sync Labs timeout ({timeout}s)"
+                last_error = f"[{model}] timeout ({timeout}s)"
                 print(f"   ⚠️ {last_error}")
-                # timeout também faz retry
 
         except Exception as submit_err:
             err_str = str(submit_err)
-            print(f"   ⚠️ Sync Labs submit erro: {err_str[:120]}")
+            print(f"   ⚠️ submit erro: {err_str[:120]}")
             last_error = err_str
             if not _is_retryable(err_str):
-                return {"success": False, "error": err_str}
-            # erro no submit também faz retry
+                return {"success": False, "retryable": False, "error": err_str}
 
-    print(f"   ❌ Sync Labs falhou após {max_retries} tentativas: {last_error[:120]}")
-    return {"success": False, "error": last_error}
+    # Esgotou todas as tentativas do mesmo modelo — é retryable (troca de modelo)
+    return {"success": False, "retryable": True, "error": last_error}
+
+
+def _run_synclabs(video_url: str, audio_url: str,
+                  timeout: int = FAL_REQUEST_TIMEOUT_SECONDS,
+                  max_retries: int = 2) -> Dict[str, Any]:
+    """
+    Cascata de modelos: tenta cada modelo da lista SYNCLABS_MODEL_CASCADE.
+    Se o modelo estiver com downstream_service_unavailable, passa para o próximo.
+
+    Ordem: lipsync-1.8.0 → lipsync-1.7.1 → lipsync-1.9.0-beta
+    """
+    for model in SYNCLABS_MODEL_CASCADE:
+        print(f"\n   🔀 Tentando modelo: {model}")
+        result = _try_single_model(video_url, audio_url, model, timeout, max_retries)
+        if result["success"]:
+            return result
+        if not result.get("retryable", False):
+            # Erro definitivo (não é downstream) — não adianta trocar de modelo
+            print(f"   ❌ Erro definitivo em [{model}]: {result['error'][:80]}")
+            return result
+        # Erro retryable (downstream/504) — tenta próximo modelo
+        print(f"   ⚠️ [{model}] indisponível — tentando próximo modelo...")
+
+    return {"success": False,
+            "error": "Todos os modelos Sync Labs indisponíveis. Tente novamente mais tarde."}
+
 
 
 
