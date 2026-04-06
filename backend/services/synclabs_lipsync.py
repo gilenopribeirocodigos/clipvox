@@ -36,9 +36,11 @@ DEMUCS_ENDPOINT = "fal-ai/demucs"
 # Cascata: cada entrada é (endpoint, model_param_or_None)
 # lipsync-2 usa endpoint /v2 e NÃO precisa de parâmetro "model"
 # lipsync-1.9.0-beta usa endpoint base com parâmetro "model"
+# react-1: modelo com controle de emoção, $10/min, suporta até 15s por clipe
+# Fallback: lipsync-1.9.0-beta se react-1 estiver down
 SYNCLABS_CASCADE = [
-    ("fal-ai/sync-lipsync/v2",  None),               # lipsync-2  — principal
-    ("fal-ai/sync-lipsync",     "lipsync-1.9.0-beta"), # fallback
+    ("fal-ai/sync-lipsync/react-1", None),              # react-1   — principal
+    ("fal-ai/sync-lipsync",         "lipsync-1.9.0-beta"), # fallback
 ]
 
 
@@ -263,11 +265,17 @@ def _try_single_endpoint(video_url: str, audio_url: str,
         try:
             print(f"   🎤 {label}: tentativa {attempt}/{max_retries}...")
 
-            # ✅ lipsync-2 (/v2) NÃO usa parâmetro "model"
-            # lipsync-1.9.0-beta (base) usa parâmetro "model"
+            # react-1: sem parâmetro "model", mas aceita emotion/model_mode
+            # lipsync-1.9.0-beta e outros: usa parâmetro "model"
             args = {"video_url": video_url, "audio_url": audio_url}
             if model:
                 args["model"] = model
+            if "react-1" in endpoint:
+                # Para canto: emotion neutral, face mode (só boca, sem mover cabeça)
+                args["emotion"]     = "neutral"
+                args["model_mode"]  = "face"
+                args["lipsync_mode"] = "cut_off"
+                args["temperature"] = 0.5
 
             handler    = fal_client.submit(endpoint, arguments=args)
             request_id = getattr(handler, "request_id", "")
