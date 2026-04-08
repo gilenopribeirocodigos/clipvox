@@ -3,7 +3,7 @@
 
 Pipeline:
   1. fal-ai/demucs              → extrai APENAS vocals (sem bateria, violão, etc)
-  2. fal-ai/sync-lipsync        → lipsync-1.9.0-beta (principal, ~$0.012/seg)
+  2. fal-ai/sync-lipsync → lipsync-1.8.0 (principal) → lipsync-1.7.1 (fallback)
      fallback: fal-ai/sync-lipsync → lipsync-1.7.1
 
 Interface idêntica — troca direta, sem mudanças no videos.py.
@@ -33,12 +33,13 @@ except Exception:
 DEMUCS_ENDPOINT = "fal-ai/demucs"
 
 # Cascata: (endpoint, model_param_or_None)
-# lipsync-1.9.0-beta: $0.70/min ≈ $0.012/seg — principal
 # lipsync-1.7.1:      fallback estável
-# react-1 REMOVIDO:   $10/min — caro e sem ganho de qualidade para canto
+# lipsync-1.9.0-beta REMOVIDO: desfigura o rosto (artefatos graves)
+# lipsync-2         REMOVIDO: distorce para canto (feito para fala/dublagem)
+# react-1           REMOVIDO: $10/min sem ganho de qualidade
 SYNCLABS_CASCADE = [
-    ("fal-ai/sync-lipsync", "lipsync-1.9.0-beta"),  # principal — $0.012/seg
-    ("fal-ai/sync-lipsync", "lipsync-1.7.1"),        # fallback estável
+    ("fal-ai/sync-lipsync", "lipsync-1.8.0"),  # principal — estável, sem artefatos
+    ("fal-ai/sync-lipsync", "lipsync-1.7.1"),  # fallback
 ]
 
 
@@ -344,7 +345,7 @@ def _run_synclabs(video_url: str, audio_url: str,
                   timeout: int = FAL_REQUEST_TIMEOUT_SECONDS,
                   max_retries: int = 2) -> Dict[str, Any]:
     """
-    Cascata: lipsync-1.9.0-beta ($0.012/seg) → lipsync-1.7.1 (fallback)
+    Cascata: lipsync-1.8.0 → lipsync-1.7.1 (fallback)
     """
     for endpoint, model in SYNCLABS_CASCADE:
         label = f"{endpoint} [{model}]" if model else endpoint
@@ -374,15 +375,16 @@ def generate_lipsync(
     origin_task_id: str = "",
 ) -> Dict[str, Any]:
     """
-    Pipeline: Demucs (vocals) → Sync Labs lipsync-1.9.0-beta
+    Pipeline: Demucs (vocals) → Sync Labs lipsync-1.8.0
     Custo: ~$0.012/seg de vídeo (~$0.06 por clipe de 5s)
+    Modelos: lipsync-1.8.0 (principal) → lipsync-1.7.1 (fallback)
     Interface idêntica — troca direta no videos.py sem outras mudanças.
     """
     try:
         _require_fal()
         safe_job_id = job_id or f"sync_{int(time.time())}"
         print(f"\n{'='*60}")
-        print(f"🎤 Demucs + Sync Labs lipsync-1.9.0-beta — job {safe_job_id[:12]}")
+        print(f"🎤 Demucs + Sync Labs lipsync-1.8.0 — job {safe_job_id[:12]}")
         print(f"{'='*60}")
 
         # 1. Vídeo local + duração
