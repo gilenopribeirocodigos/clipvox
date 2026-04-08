@@ -30,17 +30,13 @@ try:
 except Exception:
     fal_client = None
 
-DEMUCS_ENDPOINT = "fal-ai/demucs"
+DEMUCS_ENDPOINT    = "fal-ai/demucs"
+LATENTSYNC_ENDPOINT = "fal-ai/latentsync"
 
 # Cascata: (endpoint, model_param_or_None)
 # lipsync-1.7.1:      fallback estável
-# lipsync-1.9.0-beta REMOVIDO: desfigura o rosto (artefatos graves)
-# lipsync-2         REMOVIDO: distorce para canto (feito para fala/dublagem)
-# react-1           REMOVIDO: $10/min sem ganho de qualidade
-SYNCLABS_CASCADE = [
-    ("fal-ai/sync-lipsync", "lipsync-1.8.0"),  # principal — estável, sem artefatos
-    ("fal-ai/sync-lipsync", "lipsync-1.7.1"),  # fallback
-]
+# LatentSync — ByteDance, open source, $0.20 fixo para vídeos até 40s
+# Não usa parâmetro "model" — endpoint direto
 
 
 # ══════════════════════════════════════════════════════
@@ -238,26 +234,28 @@ def _is_retryable(error_str: str) -> bool:
     return any(k in low for k in _RETRYABLE_ERRORS)
 
 
-def _try_single_endpoint(video_url: str, audio_url: str,
-                         endpoint: str, model: Optional[str],
-                         timeout: int, max_retries: int) -> Dict[str, Any]:
-    """Tenta lipsync em UM endpoint/modelo com retry para erros transitórios."""
-    label      = f"{endpoint} [{model}]" if model else endpoint
-    last_error = f"{label} falhou"
+def _run_latentsync(video_url: str, audio_url: str,
+                    timeout: int = FAL_REQUEST_TIMEOUT_SECONDS,
+                    max_retries: int = 3) -> Dict[str, Any]:
+    """
+    LatentSync (ByteDance) — fal-ai/latentsync
+    Preço: $0.20 fixo para vídeos até 40s
+    Aceita só video_url + audio_url, sem parâmetros extras.
+    """
+    last_error = "LatentSync falhou"
 
     for attempt in range(1, max_retries + 1):
         if attempt > 1:
             wait = 15 * attempt
-            print(f"      ↩ retry {attempt}/{max_retries} em {wait}s ({label})...")
+            print(f"      ↩ retry {attempt}/{max_retries} em {wait}s (LatentSync)...")
             time.sleep(wait)
 
         try:
-            print(f"   🎤 {label}: tentativa {attempt}/{max_retries}...")
-            args = {"video_url": video_url, "audio_url": audio_url}
-            if model:
-                args["model"] = model
-
-            handler    = fal_client.submit(endpoint, arguments=args)
+            print(f"   🎤 LatentSync: tentativa {attempt}/{max_retries}...")
+            handler    = fal_client.submit(
+                LATENTSYNC_ENDPOINT,
+                arguments={"video_url": video_url, "audio_url": audio_url},
+            )
             request_id = getattr(handler, "request_id", "")
             print(f"   ⏳ task: {request_id}")
 
@@ -290,19 +288,20 @@ def _try_single_endpoint(video_url: str, audio_url: str,
                             last_error = err_str
                             if _is_retryable(err_str):
                                 break
-                            return {"success": False, "retryable": False, "error": err_str}
+                            return {"success": False, "error": err_str}
 
                         data  = _fal_unwrap(payload)
+                        # LatentSync retorna { "video": {"url": "..."} }
                         video = data.get("video") or {}
                         url   = video.get("url") if isinstance(video, dict) else None
                         if not url:
                             url = data.get("output_url") or data.get("video_url")
                         if url:
-                            print(f"   ✅ {label} concluído: {url[:80]}")
+                            print(f"   ✅ LatentSync concluído: {url[:80]}")
                             return {"success": True, "video_url": url,
-                                    "task_id": request_id, "model_used": label}
-                        return {"success": False, "retryable": False,
-                                "error": f"{label} concluiu sem video.url"}
+                                    "task_id": request_id, "model_used": "fal-ai/latentsync"}
+                        return {"success": False,
+                                "error": f"LatentSync concluiu sem video.url. Keys: {list(data.keys())}"}
 
                     elif status_name in {"FAILED", "ERROR", "CANCELLED"}:
                         err_msg = None
@@ -312,11 +311,11 @@ def _try_single_endpoint(video_url: str, audio_url: str,
                             err_msg = data.get("error") or data.get("message")
                         except Exception:
                             pass
-                        err        = err_msg or f"{label}: {status_name}"
+                        err        = err_msg or f"LatentSync: {status_name}"
                         last_error = err
                         if _is_retryable(err):
                             break
-                        return {"success": False, "retryable": False, "error": err}
+                        return {"success": False, "error": err}
 
                 except Exception as poll_err:
                     err_str    = str(poll_err)
@@ -324,11 +323,11 @@ def _try_single_endpoint(video_url: str, audio_url: str,
                     print(f"   ⚠️ polling erro: {err_str[:120]}")
                     if _is_retryable(err_str):
                         break
-                    return {"success": False, "retryable": False, "error": err_str}
+                    return {"success": False, "error": err_str}
 
                 time.sleep(FAL_POLL_INTERVAL_SECONDS)
             else:
-                last_error = f"{label} timeout ({timeout}s)"
+                last_error = f"LatentSync timeout ({timeout}s)"
                 print(f"   ⚠️ {last_error}")
 
         except Exception as submit_err:
@@ -336,30 +335,9 @@ def _try_single_endpoint(video_url: str, audio_url: str,
             last_error = err_str
             print(f"   ⚠️ submit erro: {err_str[:120]}")
             if not _is_retryable(err_str):
-                return {"success": False, "retryable": False, "error": err_str}
+                return {"success": False, "error": err_str}
 
-    return {"success": False, "retryable": True, "error": last_error}
-
-
-def _run_synclabs(video_url: str, audio_url: str,
-                  timeout: int = FAL_REQUEST_TIMEOUT_SECONDS,
-                  max_retries: int = 2) -> Dict[str, Any]:
-    """
-    Cascata: lipsync-1.8.0 → lipsync-1.7.1 (fallback)
-    """
-    for endpoint, model in SYNCLABS_CASCADE:
-        label = f"{endpoint} [{model}]" if model else endpoint
-        print(f"\n   🔀 Tentando: {label}")
-        result = _try_single_endpoint(video_url, audio_url, endpoint, model, timeout, max_retries)
-        if result["success"]:
-            return result
-        if not result.get("retryable", False):
-            print(f"   ❌ Erro definitivo em {label}: {result['error'][:80]}")
-            return result
-        print(f"   ⚠️ {label} indisponível — tentando próximo...")
-
-    return {"success": False,
-            "error": "Todos os modelos Sync Labs indisponíveis. Tente novamente mais tarde."}
+    return {"success": False, "error": last_error}
 
 
 # ══════════════════════════════════════════════════════
@@ -375,16 +353,15 @@ def generate_lipsync(
     origin_task_id: str = "",
 ) -> Dict[str, Any]:
     """
-    Pipeline: Demucs (vocals) → Sync Labs lipsync-1.8.0
-    Custo: ~$0.012/seg de vídeo (~$0.06 por clipe de 5s)
-    Modelos: lipsync-1.8.0 (principal) → lipsync-1.7.1 (fallback)
+    Pipeline: Demucs (vocals) → LatentSync (ByteDance)
+    Custo: $0.20 fixo para vídeos até 40s (~$0.20 por clipe de 5s)
     Interface idêntica — troca direta no videos.py sem outras mudanças.
     """
     try:
         _require_fal()
         safe_job_id = job_id or f"sync_{int(time.time())}"
         print(f"\n{'='*60}")
-        print(f"🎤 Demucs + Sync Labs lipsync-1.8.0 — job {safe_job_id[:12]}")
+        print(f"🎤 Demucs + LatentSync — job {safe_job_id[:12]}")
         print(f"{'='*60}")
 
         # 1. Vídeo local + duração
@@ -433,12 +410,12 @@ def generate_lipsync(
         if not video_url:
             return {"success": False, "error": "Falha ao publicar vídeo no R2"}
         if not _check_url(video_url, "Vídeo para Sync Labs"):
-            return {"success": False, "error": "Vídeo não acessível pelo Sync Labs"}
+            return {"success": False, "error": "Vídeo não acessível pelo LatentSync"}
 
-        # 6. Sync Labs
-        result = _run_synclabs(video_url, final_audio_url)
+        # 6. LatentSync
+        result = _run_latentsync(video_url, final_audio_url)
         if not result.get("success"):
-            return {"success": False, "error": result.get("error", "Sync Labs falhou")}
+            return {"success": False, "error": result.get("error", "LatentSync falhou")}
 
         final_video_url = result["video_url"]
 
