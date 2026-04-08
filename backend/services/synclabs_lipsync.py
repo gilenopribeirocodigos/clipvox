@@ -3,11 +3,10 @@
 
 Pipeline:
   1. fal-ai/demucs              → extrai APENAS vocals (sem bateria, violão, etc)
-  2. fal-ai/sync-lipsync/v2     → lipsync-2 (modelo principal)
-     fallback: fal-ai/sync-lipsync → lipsync-1.9.0-beta
+  2. fal-ai/sync-lipsync        → lipsync-1.9.0-beta (principal, ~$0.012/seg)
+     fallback: fal-ai/sync-lipsync → lipsync-1.7.1
 
-Interface idêntica ao synclabs_lipsync.py anterior — troca direta, sem
-mudanças no videos.py.
+Interface idêntica — troca direta, sem mudanças no videos.py.
 """
 
 import os
@@ -33,14 +32,13 @@ except Exception:
 
 DEMUCS_ENDPOINT = "fal-ai/demucs"
 
-# Cascata: cada entrada é (endpoint, model_param_or_None)
-# lipsync-2 usa endpoint /v2 e NÃO precisa de parâmetro "model"
-# lipsync-1.9.0-beta usa endpoint base com parâmetro "model"
-# react-1: modelo com controle de emoção, $10/min, suporta até 15s por clipe
-# Fallback: lipsync-1.9.0-beta se react-1 estiver down
+# Cascata: (endpoint, model_param_or_None)
+# lipsync-1.9.0-beta: $0.70/min ≈ $0.012/seg — principal
+# lipsync-1.7.1:      fallback estável
+# react-1 REMOVIDO:   $10/min — caro e sem ganho de qualidade para canto
 SYNCLABS_CASCADE = [
-    ("fal-ai/sync-lipsync/react-1", None),              # react-1   — principal
-    ("fal-ai/sync-lipsync",         "lipsync-1.9.0-beta"), # fallback
+    ("fal-ai/sync-lipsync", "lipsync-1.9.0-beta"),  # principal — $0.012/seg
+    ("fal-ai/sync-lipsync", "lipsync-1.7.1"),        # fallback estável
 ]
 
 
@@ -163,9 +161,6 @@ def _normalize_audio(audio_path: str, job_id: str,
 
 def _extract_vocals_demucs(audio_url: str, job_id: str) -> Optional[str]:
     """
-    Chama fal-ai/demucs para separar vocals do resto da música.
-    Retorna URL pública dos vocals isolados, ou None se falhar.
-
     fal-ai/demucs recebe só audio_url e retorna stems na raiz:
     data = { "vocals": {"url":"..."}, "drums": {...}, ... }
     """
@@ -186,7 +181,6 @@ def _extract_vocals_demucs(audio_url: str, job_id: str) -> Optional[str]:
 
             if isinstance(status, getattr(fal_client, "Queued", tuple())):
                 print(f"   ⏳ Demucs fila pos={getattr(status,'position','?')} ({elapsed}s)")
-
             elif isinstance(status, getattr(fal_client, "InProgress", tuple())):
                 logs = getattr(status, "logs", None) or []
                 if logs:
@@ -196,13 +190,11 @@ def _extract_vocals_demucs(audio_url: str, job_id: str) -> Optional[str]:
                         last_log = msg
                 else:
                     print(f"   ⏳ Demucs processando... ({elapsed}s)")
-
             elif isinstance(status, getattr(fal_client, "Completed", tuple())) or status_name == "COMPLETED":
                 payload   = handler.get()
                 data      = _fal_unwrap(payload)
                 vocals    = data.get("vocals") or {}
                 vocal_url = vocals.get("url") if isinstance(vocals, dict) else None
-                # fallback estrutura aninhada
                 if not vocal_url:
                     stems     = data.get("stems") or {}
                     vocals_s  = stems.get("vocals") or {}
@@ -214,7 +206,6 @@ def _extract_vocals_demucs(audio_url: str, job_id: str) -> Optional[str]:
                     return vocal_url
                 print(f"   ❌ Demucs sem vocal_url. Keys: {list(data.keys())}")
                 return None
-
             elif status_name in {"FAILED", "ERROR", "CANCELLED"}:
                 print(f"   ❌ Demucs falhou: {status_name}")
                 return None
@@ -230,7 +221,7 @@ def _extract_vocals_demucs(audio_url: str, job_id: str) -> Optional[str]:
 
 
 # ══════════════════════════════════════════════════════
-# PASSO 2 — SYNC LABS: cascata lipsync-2 → 1.9.0-beta
+# PASSO 2 — SYNC LABS com cascata de modelos
 # ══════════════════════════════════════════════════════
 
 _RETRYABLE_ERRORS = (
@@ -249,11 +240,8 @@ def _is_retryable(error_str: str) -> bool:
 def _try_single_endpoint(video_url: str, audio_url: str,
                          endpoint: str, model: Optional[str],
                          timeout: int, max_retries: int) -> Dict[str, Any]:
-    """
-    Tenta lipsync em UM endpoint/modelo com retry para erros transitórios.
-    model=None → não envia parâmetro 'model' (usado pelo /v2).
-    """
-    label      = f"{endpoint}" + (f" [{model}]" if model else " [lipsync-2]")
+    """Tenta lipsync em UM endpoint/modelo com retry para erros transitórios."""
+    label      = f"{endpoint} [{model}]" if model else endpoint
     last_error = f"{label} falhou"
 
     for attempt in range(1, max_retries + 1):
@@ -264,18 +252,9 @@ def _try_single_endpoint(video_url: str, audio_url: str,
 
         try:
             print(f"   🎤 {label}: tentativa {attempt}/{max_retries}...")
-
-            # react-1: sem parâmetro "model", mas aceita emotion/model_mode
-            # lipsync-1.9.0-beta e outros: usa parâmetro "model"
             args = {"video_url": video_url, "audio_url": audio_url}
             if model:
                 args["model"] = model
-            if "react-1" in endpoint:
-                # Para canto: emotion neutral, face mode (só boca, sem mover cabeça)
-                args["emotion"]     = "neutral"
-                args["model_mode"]  = "face"
-                args["lipsync_mode"] = "cut_off"
-                args["temperature"] = 0.5
 
             handler    = fal_client.submit(endpoint, arguments=args)
             request_id = getattr(handler, "request_id", "")
@@ -292,7 +271,6 @@ def _try_single_endpoint(video_url: str, audio_url: str,
 
                     if isinstance(status, getattr(fal_client, "Queued", tuple())):
                         print(f"   ⏳ fila pos={getattr(status,'position','?')} ({elapsed}s)")
-
                     elif isinstance(status, getattr(fal_client, "InProgress", tuple())):
                         logs = getattr(status, "logs", None) or []
                         if logs:
@@ -302,7 +280,6 @@ def _try_single_endpoint(video_url: str, audio_url: str,
                                 last_log = msg
                         else:
                             print(f"   ⏳ processando... ({elapsed}s)")
-
                     elif isinstance(status, getattr(fal_client, "Completed", tuple())) or status_name == "COMPLETED":
                         try:
                             payload = handler.get()
@@ -367,14 +344,10 @@ def _run_synclabs(video_url: str, audio_url: str,
                   timeout: int = FAL_REQUEST_TIMEOUT_SECONDS,
                   max_retries: int = 2) -> Dict[str, Any]:
     """
-    Cascata de endpoints:
-      1. fal-ai/sync-lipsync/v2  (lipsync-2,        $3/min)
-      2. fal-ai/sync-lipsync     (lipsync-1.9.0-beta, $0.70/min)
-
-    Se o endpoint principal retornar downstream_service_unavailable, passa para o fallback.
+    Cascata: lipsync-1.9.0-beta ($0.012/seg) → lipsync-1.7.1 (fallback)
     """
     for endpoint, model in SYNCLABS_CASCADE:
-        label = endpoint + ("" if not model else f" [{model}]")
+        label = f"{endpoint} [{model}]" if model else endpoint
         print(f"\n   🔀 Tentando: {label}")
         result = _try_single_endpoint(video_url, audio_url, endpoint, model, timeout, max_retries)
         if result["success"]:
@@ -385,7 +358,7 @@ def _run_synclabs(video_url: str, audio_url: str,
         print(f"   ⚠️ {label} indisponível — tentando próximo...")
 
     return {"success": False,
-            "error": "Todos os endpoints Sync Labs indisponíveis. Tente novamente mais tarde."}
+            "error": "Todos os modelos Sync Labs indisponíveis. Tente novamente mais tarde."}
 
 
 # ══════════════════════════════════════════════════════
@@ -401,14 +374,15 @@ def generate_lipsync(
     origin_task_id: str = "",
 ) -> Dict[str, Any]:
     """
-    Pipeline: Demucs → Sync Labs lipsync-2 (fallback: lipsync-1.9.0-beta)
+    Pipeline: Demucs (vocals) → Sync Labs lipsync-1.9.0-beta
+    Custo: ~$0.012/seg de vídeo (~$0.06 por clipe de 5s)
     Interface idêntica — troca direta no videos.py sem outras mudanças.
     """
     try:
         _require_fal()
         safe_job_id = job_id or f"sync_{int(time.time())}"
         print(f"\n{'='*60}")
-        print(f"🎤 Demucs + Sync Labs lipsync-2 — job {safe_job_id[:12]}")
+        print(f"🎤 Demucs + Sync Labs lipsync-1.9.0-beta — job {safe_job_id[:12]}")
         print(f"{'='*60}")
 
         # 1. Vídeo local + duração
@@ -430,7 +404,7 @@ def generate_lipsync(
 
         # 4. Demucs — extrai vocals
         vocals_url      = _extract_vocals_demucs(audio_r2_url, safe_job_id)
-        final_audio_url = audio_r2_url   # fallback padrão
+        final_audio_url = audio_r2_url
 
         if vocals_url:
             vocals_local = os.path.join(UPLOAD_DIR, f"{safe_job_id}_vocals_raw.mp3")
@@ -459,14 +433,14 @@ def generate_lipsync(
         if not _check_url(video_url, "Vídeo para Sync Labs"):
             return {"success": False, "error": "Vídeo não acessível pelo Sync Labs"}
 
-        # 6. Sync Labs (cascata lipsync-2 → 1.9.0-beta)
+        # 6. Sync Labs
         result = _run_synclabs(video_url, final_audio_url)
         if not result.get("success"):
             return {"success": False, "error": result.get("error", "Sync Labs falhou")}
 
         final_video_url = result["video_url"]
 
-        # 7. Salvar resultado no R2
+        # 7. Salvar no R2
         local_out = os.path.join(UPLOAD_DIR, f"{safe_job_id}_lipsync.mp4")
         _download_to_local(final_video_url, local_out, timeout=600)
         r2_url = None
