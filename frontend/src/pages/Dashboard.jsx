@@ -263,14 +263,6 @@ function UploadZone({ onStart }) {
 function LeftPanel({ fileName, jobStatus, onReset }) {
   const steps = ['plan','analyzing','creative','scenes','segments','merge']
   const stepLabels = { plan:'Plan', analyzing:'Input Analyzing', creative:'Creative Concept', scenes:'Scenes', segments:'Video Segments', merge:'Merge Final' }
-  const stepDesc = {
-    plan:      'Criando o plano narrativo e estrutura do videoclipe...',
-    analyzing: 'Analisando BPM, ritmo e estrutura musical do áudio...',
-    creative:  'Gerando conceito criativo, paleta de cores e direção visual...',
-    scenes:    'Gerando imagens de cada cena com IA (Nano Banana)...',
-    segments:  'Convertendo imagens em clipes de vídeo com Kling AI...',
-    merge:     'Unindo todos os clipes e adicionando o áudio final...',
-  }
   return (
     <div style={{ width:310, minWidth:280, display:'flex', flexDirection:'column', gap:16 }}>
       <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:18 }}>
@@ -293,24 +285,13 @@ function LeftPanel({ fileName, jobStatus, onReset }) {
           const done   = jobStatus?.status === 'completed' || (jobStatus?.current_step && steps.indexOf(jobStatus.current_step) > i)
           const active = jobStatus?.current_step === step
           return (
-            <div key={step}>
-              <div style={{ display:'flex', alignItems:'center', gap:12, padding:'9px 0', borderBottom: (!active && i < steps.length-1) ? '1px solid rgba(255,255,255,.045)' : 'none' }}>
-                <div style={{ width:26, height:26, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background: done ? 'rgba(34,197,94,.15)' : active ? 'rgba(249,115,22,.15)' : 'rgba(255,255,255,.04)', border: done ? '1px solid rgba(34,197,94,.4)' : active ? '1px solid rgba(249,115,22,.4)' : '1px solid rgba(255,255,255,.1)', fontSize:11, fontWeight:700, color: done ? '#22c55e' : active ? '#f97316' : '#4b5563' }}>
-                  {done ? '✓' : active ? <div style={{ width:8,height:8,border:'2px solid rgba(249,115,22,.4)',borderTop:'2px solid #f97316',borderRadius:'50%',animation:'spin .8s linear infinite' }} /> : i+1}
-                </div>
-                <span style={{ flex:1, fontSize:13, fontWeight: active ? 600 : 400, color: done ? '#6b7280' : active ? '#fff' : '#4b5563' }}>{stepLabels[step]}</span>
-                {done && <span style={{ color:'#22c55e', fontSize:15 }}>✓</span>}
+            <div key={step} style={{ display:'flex', alignItems:'center', gap:12, padding:'9px 0', borderBottom: i < steps.length-1 ? '1px solid rgba(255,255,255,.045)' : 'none' }}>
+              <div style={{ width:26, height:26, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background: done ? 'rgba(34,197,94,.15)' : active ? 'rgba(249,115,22,.15)' : 'rgba(255,255,255,.04)', border: done ? '1px solid rgba(34,197,94,.4)' : active ? '1px solid rgba(249,115,22,.4)' : '1px solid rgba(255,255,255,.1)', fontSize:11, fontWeight:700, color: done ? '#22c55e' : active ? '#f97316' : '#4b5563' }}>
+                {done ? '✓' : i+1}
               </div>
-              {/* Descrição do step ativo logo abaixo */}
-              {active && (
-                <div style={{ margin:'2px 0 10px 38px', padding:'8px 12px', background:'rgba(249,115,22,.06)', border:'1px solid rgba(249,115,22,.15)', borderRadius:8, borderBottom:'1px solid rgba(255,255,255,.045)', animation:'fadeUp .3s ease' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
-                    <div style={{ width:6,height:6,borderRadius:'50%',background:'#f97316',animation:'pulse 1.4s ease infinite' }} />
-                    <span style={{ color:'#f97316', fontSize:9, fontWeight:700, letterSpacing:.5 }}>EM ANDAMENTO</span>
-                  </div>
-                  <p style={{ color:'#9ca3af', fontSize:11, lineHeight:1.6 }}>{stepDesc[step]}</p>
-                </div>
-              )}
+              <span style={{ flex:1, fontSize:13, fontWeight: active ? 600 : 400, color: done ? '#6b7280' : active ? '#fff' : '#4b5563' }}>{stepLabels[step]}</span>
+              {done && <span style={{ color:'#22c55e', fontSize:15 }}>✓</span>}
+              {active && <span style={{ color:'#f97316', fontSize:11, animation:'pulse 1.4s ease infinite' }}>⏳</span>}
             </div>
           )
         })}
@@ -936,38 +917,13 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncSta
   )
 }
 
-// ✅ Força download real via Blob — evita que o browser abra o arquivo inline
-async function forceDownload(url, filename) {
-  try {
-    const res  = await fetch(url)
-    const blob = await res.blob()
-    const a    = document.createElement('a')
-    a.href     = URL.createObjectURL(blob)
-    a.download = filename
-    document.body.appendChild(a); a.click()
-    setTimeout(() => { URL.revokeObjectURL(a.href); document.body.removeChild(a) }, 200)
-  } catch(e) {
-    // fallback: abre em nova aba se fetch falhar (CORS)
-    window.open(url, '_blank')
-  }
-}
-
-function MergePanel({ jobId, videoClips, lipSyncUrl, initialMergeStatus, initialMergeUrl }) {
-  // ✅ FIX: inicializa com o status real do job — evita mostrar botão quando merge já concluído
-  const [mergeStatus, setMergeStatus] = useState(initialMergeStatus || null)
-  const [mergeUrl,    setMergeUrl]    = useState(initialMergeUrl || null)
+function MergePanel({ jobId, videoClips, lipSyncUrl }) {
+  const [mergeStatus, setMergeStatus] = useState(null)
+  const [mergeUrl,    setMergeUrl]    = useState(null)
   const [mergeError,  setMergeError]  = useState(null)
   const [loading,     setLoading]     = useState(false)
   const pollRef = useRef()
   useEffect(() => { return () => { if (pollRef.current) clearInterval(pollRef.current) } }, [])
-
-  // ✅ FIX: se o job já tinha merge concluído ao montar, atualiza estado
-  useEffect(() => {
-    if (initialMergeStatus === 'completed' && initialMergeUrl) {
-      setMergeStatus('completed'); setMergeUrl(initialMergeUrl)
-    }
-  }, [initialMergeStatus, initialMergeUrl])
-
   const successClips = (videoClips || []).filter(c => c.success && c.video_url)
 
   const handleMerge = async () => {
@@ -1031,17 +987,15 @@ function MergePanel({ jobId, videoClips, lipSyncUrl, initialMergeStatus, initial
         <div style={{ textAlign:'center', padding:'16px 0' }}>
           <div style={{ fontSize:40, marginBottom:12 }}>🎉</div>
           <div style={{ color:'#22c55e', fontSize:16, fontWeight:700, marginBottom:6 }}>Videoclipe pronto!</div>
-          <div style={{ color:'#9ca3af', fontSize:12, marginBottom:16 }}>Acesse a aba <strong style={{ color:'#fff' }}>Resultado</strong> para assistir e baixar</div>
           <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap' }}>
             <a href={mergeUrl} target="_blank" rel="noreferrer"
               style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'12px 24px', background:'linear-gradient(135deg,#22c55e,#16a34a)', color:'#fff', borderRadius:12, fontSize:14, fontWeight:600, textDecoration:'none' }}>
               ▶ Assistir Vídeo
             </a>
-            {/* ✅ FIX: forceDownload via Blob — evita abrir no browser */}
-            <button onClick={() => forceDownload(mergeUrl, `clipvox_${jobId}.mp4`)}
-              style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'12px 24px', background:'rgba(255,255,255,.07)', color:'#fff', border:'1px solid rgba(255,255,255,.15)', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer' }}>
+            <a href={mergeUrl} download={`clipvox_${jobId}.mp4`}
+              style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'12px 24px', background:'rgba(255,255,255,.07)', color:'#fff', border:'1px solid rgba(255,255,255,.15)', borderRadius:12, fontSize:14, fontWeight:600, textDecoration:'none' }}>
               ⬇ Baixar MP4
-            </button>
+            </a>
           </div>
         </div>
       )}
@@ -1055,6 +1009,33 @@ function MergePanel({ jobId, videoClips, lipSyncUrl, initialMergeStatus, initial
           </button>
         </div>
       )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════
+// 🟢 PIPELINE CONNECTOR — linha verde entre etapas (estilo Freebeat)
+// ══════════════════════════════════════════════════════
+function PipelineConnector({ done, active, label }) {
+  const color     = done ? '#22c55e' : active ? '#f97316' : '#1f2937'
+  const textColor = done ? '#22c55e' : active ? '#f97316' : '#374151'
+  return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', width:'100%', padding:'4px 0' }}>
+      <div style={{ width:2, height:18, background:`linear-gradient(to bottom, ${color}44, ${color})`, borderRadius:1 }} />
+      <div style={{
+        display:'flex', alignItems:'center', gap:6,
+        background: done ? 'rgba(34,197,94,.08)' : active ? 'rgba(249,115,22,.08)' : 'rgba(255,255,255,.03)',
+        border:`1px solid ${done ? 'rgba(34,197,94,.25)' : active ? 'rgba(249,115,22,.25)' : 'rgba(255,255,255,.06)'}`,
+        borderRadius:20, padding:'4px 14px'
+      }}>
+        <div style={{
+          width:7, height:7, borderRadius:'50%', background:color,
+          boxShadow: done ? '0 0 8px rgba(34,197,94,.5)' : active ? '0 0 8px rgba(249,115,22,.5)' : 'none',
+          animation: active ? 'pulse 1.4s ease infinite' : 'none'
+        }} />
+        <span style={{ color:textColor, fontSize:10, fontWeight:600, letterSpacing:.5 }}>{label}</span>
+      </div>
+      <div style={{ width:2, height:18, background:`linear-gradient(to bottom, ${color}, ${color}44)`, borderRadius:1 }} />
     </div>
   )
 }
@@ -1108,268 +1089,6 @@ function ScenesGrid({ scenes, jobId, onEditScene }) {
 }
 
 // ══════════════════════════════════════════════════════
-// 🎛️ EDITOR — Timeline de segmentos + waveform MP3
-// ══════════════════════════════════════════════════════
-function EditorTimeline({ items, selectedIdx, onSelect, color, fileName }) {
-  const [hovered, setHovered] = useState(null)
-  return (
-    <div style={{ background:'rgba(8,8,12,.9)', borderTop:'1px solid rgba(255,255,255,.06)', padding:'10px 14px 12px' }}>
-      {/* Barra de controles */}
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:6, color:'#6b7280', fontSize:11 }}>
-        <span style={{ cursor:'pointer' }}>✂️</span>
-        <div style={{ flex:1, display:'flex', justifyContent:'center', alignItems:'center', gap:8 }}>
-          <span>▶</span>
-          <span style={{ color:'#9ca3af' }}>0:00:00</span>
-        </div>
-        <span style={{ fontSize:10 }}>🔍−</span>
-        <input type="range" min={0} max={100} defaultValue={50} style={{ width:70, accentColor:color }} />
-        <span style={{ fontSize:10 }}>🔍+</span>
-      </div>
-      {/* Marcadores de tempo */}
-      <div style={{ position:'relative', height:12, marginBottom:2 }}>
-        {['s','30s','1m','1:30','2m','2:30','3m'].map((label, i, arr) => (
-          <span key={i} style={{ position:'absolute', left:`${(i/(arr.length-1))*100}%`, fontSize:8.5, color:'#374151', transform:'translateX(-50%)' }}>{label}</span>
-        ))}
-      </div>
-      {/* Segmentos clicáveis */}
-      <div style={{ height:26, background:'rgba(255,255,255,.03)', borderRadius:4, display:'flex', gap:1.5, overflow:'hidden', cursor:'pointer', marginBottom:3 }}>
-        {items.length === 0
-          ? <div style={{ flex:1, background:`${color}22`, borderRadius:4, display:'flex', alignItems:'center', justifyContent:'center' }}>
-              <span style={{ color:'#374151', fontSize:10 }}>aguardando...</span>
-            </div>
-          : items.map((item, i) => (
-            <div key={i}
-              onClick={() => onSelect(i)}
-              onMouseEnter={() => setHovered(i)}
-              onMouseLeave={() => setHovered(null)}
-              title={`#${item.scene_number || (i+1)}`}
-              style={{
-                flex: item.duration_seconds || 1, minWidth:8,
-                background: i === selectedIdx ? color : hovered === i ? `${color}cc` : `${color}88`,
-                borderRadius:2, transition:'background .12s',
-                outline: i === selectedIdx ? `2px solid ${color}` : 'none', outlineOffset:-1
-              }} />
-          ))
-        }
-      </div>
-      {/* Waveform MP3 */}
-      <div style={{ height:20, background:'rgba(255,255,255,.03)', borderRadius:4, overflow:'hidden', position:'relative', display:'flex', alignItems:'center' }}>
-        <span style={{ position:'absolute', left:6, fontSize:8, color:'#374151', whiteSpace:'nowrap', zIndex:1 }}>
-          🎵 {fileName || 'audio.mp3'}
-        </span>
-        <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', paddingLeft:88, paddingRight:4, gap:0.5 }}>
-          {Array.from({ length:130 }).map((_,i) => (
-            <div key={i} style={{ flex:1, background:'rgba(249,115,22,.38)', borderRadius:1, height:`${18+((i*41+7)%52)}%` }} />
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ══════════════════════════════════════════════════════
-// 🎛️ EDITOR PREVIEW — sub-abas Shotlist / Imagens / Videos
-// ══════════════════════════════════════════════════════
-function EditorPanel({ scenes, completedClips, jobStatus, onEditScene, onEditClip, fileName }) {
-  const [subTab,      setSubTab]      = useState(0)
-  const [selectedIdx, setSelectedIdx] = useState(0)
-  const [modal,       setModal]       = useState(null) // null | number
-
-  const shotItems  = scenes || []
-  const imageItems = (scenes || []).filter(s => s.image_url)
-  const videoItems = (completedClips || []).filter(c => c.success && c.video_url)
-  const allItems   = [shotItems, imageItems, videoItems]
-  const counts     = allItems.map(a => a.length)
-  const currentItems = allItems[subTab]
-  const selectedItem = currentItems[selectedIdx] || null
-  const tabColors    = ['#f97316','#22c55e','#a78bfa']
-  const color        = tabColors[subTab]
-
-  const switchSub  = (idx) => { setSubTab(idx); setSelectedIdx(0); setModal(null) }
-  const openModal  = (idx) => { setSelectedIdx(idx); setModal(idx) }
-  const closeModal = ()    => setModal(null)
-  const navModal   = (d)   => {
-    const next = Math.max(0, Math.min(currentItems.length-1, modal+d))
-    setModal(next); setSelectedIdx(next)
-  }
-
-  return (
-    <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, overflow:'hidden', animation:'fadeUp .4s ease' }}>
-
-      {/* Header */}
-      <div style={{ padding:'12px 18px', display:'flex', alignItems:'center', justifyContent:'space-between', borderBottom:'1px solid rgba(255,255,255,.07)' }}>
-        <span style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:13, letterSpacing:2, color:'#fff' }}>EDITOR PREVIEW</span>
-        <div style={{ display:'flex', gap:4 }}>
-          {['Shotlist','Imagens','Videos'].map((label, idx) => (
-            <button key={idx} onClick={() => switchSub(idx)}
-              style={{ padding:'5px 13px', borderRadius:7, fontSize:12, fontWeight:600, cursor:'pointer',
-                background: subTab===idx ? 'rgba(255,255,255,.1)' : 'transparent',
-                border: subTab===idx ? '1px solid rgba(255,255,255,.18)' : '1px solid rgba(255,255,255,.06)',
-                color: subTab===idx ? '#fff' : '#6b7280', transition:'all .2s' }}>
-              {label} ({counts[idx]})
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Preview Area */}
-      <div style={{ position:'relative', background:'#050508', minHeight:260 }}>
-
-        {/* SHOTLIST preview */}
-        {subTab === 0 && selectedItem && modal === null && (
-          <div style={{ padding:'20px 24px', animation:'fadeUp .3s ease' }}>
-            <div style={{ color:'#9ca3af', fontSize:12, fontWeight:600, marginBottom:16 }}>Shot List Preview</div>
-            <div style={{ marginBottom:14 }}>
-              <div style={{ color:'#4b5563', fontSize:9, fontWeight:700, letterSpacing:1, marginBottom:5 }}>START FRAME</div>
-              <p style={{ color:'#d1d5db', fontSize:13, lineHeight:1.65 }}>{resolvePrompt(selectedItem) || selectedItem.camera_movement || '—'}</p>
-            </div>
-            <div>
-              <div style={{ color:'#4b5563', fontSize:9, fontWeight:700, letterSpacing:1, marginBottom:5 }}>ACTION & CAMERA</div>
-              <p style={{ color:'#d1d5db', fontSize:13, lineHeight:1.65 }}>{selectedItem.camera_movement || selectedItem.mood || '—'}</p>
-            </div>
-          </div>
-        )}
-
-        {/* IMAGENS preview */}
-        {subTab === 1 && selectedItem && modal === null && (
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:260, padding:16, animation:'fadeUp .3s ease' }}>
-            {selectedItem.image_url
-              ? <img src={selectedItem.image_url} alt="" style={{ maxHeight:240, maxWidth:'100%', objectFit:'contain', borderRadius:6 }} />
-              : <div style={{ color:'#4b5563', fontSize:13 }}>Sem imagem</div>}
-          </div>
-        )}
-
-        {/* VIDEOS preview */}
-        {subTab === 2 && selectedItem && modal === null && (
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:260, padding:16, animation:'fadeUp .3s ease' }}>
-            {selectedItem.video_url
-              ? <video key={selectedItem.video_url} src={selectedItem.video_url} controls style={{ maxHeight:240, maxWidth:'100%', borderRadius:6 }} />
-              : <div style={{ color:'#4b5563', fontSize:13 }}>Sem vídeo</div>}
-          </div>
-        )}
-
-        {/* Empty state */}
-        {(currentItems.length === 0) && modal === null && (
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:260, flexDirection:'column', gap:10, color:'#374151' }}>
-            <div style={{ fontSize:34 }}>{subTab===0 ? '📋' : subTab===1 ? '🖼️' : '🎥'}</div>
-            <div style={{ fontSize:13 }}>Aguardando geração...</div>
-          </div>
-        )}
-
-        {/* ══ MODAL OVERLAY ══ */}
-        {modal !== null && (() => {
-          const item  = currentItems[modal]
-          if (!item) return null
-          const total = currentItems.length
-          return (
-            <div style={{ position:'absolute', inset:0, background:'rgba(10,10,14,.97)', zIndex:20, display:'flex', flexDirection:'column', padding:'18px 20px', overflowY:'auto', animation:'fadeUp .25s ease' }}>
-              <button onClick={closeModal}
-                style={{ position:'absolute', top:12, right:14, background:'rgba(255,255,255,.07)', border:'none', borderRadius:7, color:'#9ca3af', fontSize:14, cursor:'pointer', padding:'3px 10px' }}>✕</button>
-
-              {/* SHOT modal */}
-              {subTab === 0 && (
-                <>
-                  <div style={{ color:'#fff', fontSize:14, fontWeight:700, marginBottom:14 }}>Shot #{item.scene_number}</div>
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, flex:1 }}>
-                    <div style={{ background:'rgba(255,255,255,.04)', borderRadius:12, padding:'14px 16px' }}>
-                      <div style={{ color:'#9ca3af', fontSize:11, fontWeight:700, letterSpacing:.5, marginBottom:12 }}>Shot Details</div>
-                      <div style={{ color:'#4b5563', fontSize:9, letterSpacing:.5, marginBottom:3 }}>TIME</div>
-                      <div style={{ color:'#d1d5db', fontSize:12, marginBottom:10 }}>{item.duration_seconds || 5}s</div>
-                      <div style={{ color:'#4b5563', fontSize:9, letterSpacing:.5, marginBottom:3 }}>ACTION & CONTENT</div>
-                      <div style={{ color:'#d1d5db', fontSize:12, lineHeight:1.6, marginBottom:10 }}>{item.camera_movement || item.mood || '—'}</div>
-                      <div style={{ color:'#4b5563', fontSize:9, letterSpacing:.5, marginBottom:3 }}>TYPE</div>
-                      <div style={{ color:'#22c55e', fontSize:12, fontWeight:600 }}>A-roll</div>
-                    </div>
-                    <div style={{ background:'rgba(255,255,255,.04)', borderRadius:12, padding:'14px 16px' }}>
-                      <div style={{ color:'#9ca3af', fontSize:11, fontWeight:700, letterSpacing:.5, marginBottom:10 }}>Prompt Content</div>
-                      <p style={{ color:'#d1d5db', fontSize:12, lineHeight:1.7 }}>{resolvePrompt(item) || '—'}</p>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* IMAGEM modal */}
-              {subTab === 1 && (
-                <>
-                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14 }}>
-                    <span style={{ color:'#fff', fontSize:14, fontWeight:700 }}>Cena #{item.scene_number}</span>
-                    <span style={{ background:'rgba(34,197,94,.15)', color:'#22c55e', fontSize:9, fontWeight:700, borderRadius:5, padding:'2px 7px' }}>Sucesso</span>
-                  </div>
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, flex:1 }}>
-                    <div>
-                      <div style={{ color:'#9ca3af', fontSize:11, fontWeight:600, marginBottom:8 }}>Imagem gerada</div>
-                      {item.image_url && <img src={item.image_url} alt="" style={{ width:'100%', borderRadius:10, display:'block', marginBottom:8, maxHeight:190, objectFit:'cover' }} />}
-                      <div style={{ display:'flex', gap:6 }}>
-                        <button onClick={() => { onEditScene && onEditScene(item); closeModal() }}
-                          style={{ flex:1, padding:'7px', background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:8, color:'#9ca3af', fontSize:10, cursor:'pointer' }}>✏️ Editar</button>
-                        <a href={item.image_url} download={`cena_${item.scene_number}.jpg`} target="_blank" rel="noreferrer"
-                          style={{ flex:1, padding:'7px', background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:8, color:'#9ca3af', fontSize:10, cursor:'pointer', textDecoration:'none', textAlign:'center' }}>⬇ Baixar</a>
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ color:'#9ca3af', fontSize:11, fontWeight:600, marginBottom:8 }}>Conteúdo do prompt</div>
-                      <div style={{ background:'rgba(255,255,255,.04)', borderRadius:10, padding:'12px', maxHeight:230, overflowY:'auto' }}>
-                        <p style={{ color:'#d1d5db', fontSize:12, lineHeight:1.7 }}>{resolvePrompt(item) || '—'}</p>
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* VÍDEO modal */}
-              {subTab === 2 && (
-                <>
-                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14 }}>
-                    <span style={{ color:'#fff', fontSize:14, fontWeight:700 }}>Vídeo #{item.scene_number}</span>
-                    <span style={{ background:'rgba(34,197,94,.15)', color:'#22c55e', fontSize:9, fontWeight:700, borderRadius:5, padding:'2px 7px' }}>Sucesso</span>
-                  </div>
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, flex:1 }}>
-                    <div>
-                      <div style={{ color:'#9ca3af', fontSize:11, fontWeight:600, marginBottom:8 }}>Vídeo gerado</div>
-                      <video key={item.video_url} src={item.video_url} controls style={{ width:'100%', borderRadius:10, display:'block', maxHeight:190, marginBottom:8 }} />
-                      <div style={{ display:'flex', gap:6 }}>
-                        <button onClick={() => { onEditClip && onEditClip(item); closeModal() }}
-                          style={{ flex:1, padding:'7px', background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:8, color:'#9ca3af', fontSize:10, cursor:'pointer' }}>✏️ Editar</button>
-                        <a href={item.video_url} download={`video_${item.scene_number}.mp4`} target="_blank" rel="noreferrer"
-                          style={{ flex:1, padding:'7px', background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:8, color:'#9ca3af', fontSize:10, cursor:'pointer', textDecoration:'none', textAlign:'center' }}>⬇ Baixar</a>
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ color:'#9ca3af', fontSize:11, fontWeight:600, marginBottom:8 }}>Conteúdo do prompt</div>
-                      <div style={{ background:'rgba(255,255,255,.04)', borderRadius:10, padding:'12px', maxHeight:230, overflowY:'auto' }}>
-                        <p style={{ color:'#d1d5db', fontSize:12, lineHeight:1.7 }}>{resolvePrompt(item) || '—'}</p>
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* Navegação */}
-              <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:14, marginTop:16 }}>
-                <button onClick={() => navModal(-1)} disabled={modal === 0}
-                  style={{ background:'rgba(255,255,255,.07)', border:'none', borderRadius:6, color: modal===0 ? '#374151' : '#9ca3af', fontSize:18, cursor: modal===0 ? 'default':'pointer', padding:'3px 12px' }}>‹</button>
-                <span style={{ color:'#9ca3af', fontSize:12 }}>{modal+1}/{total}</span>
-                <button onClick={() => navModal(1)} disabled={modal === total-1}
-                  style={{ background:'rgba(255,255,255,.07)', border:'none', borderRadius:6, color: modal===total-1 ? '#374151' : '#9ca3af', fontSize:18, cursor: modal===total-1 ? 'default':'pointer', padding:'3px 12px' }}>›</button>
-              </div>
-            </div>
-          )
-        })()}
-      </div>
-
-      {/* Timeline */}
-      <EditorTimeline
-        items={currentItems}
-        selectedIdx={selectedIdx}
-        onSelect={openModal}
-        color={color}
-        fileName={fileName}
-      />
-    </div>
-  )
-}
-
-// ══════════════════════════════════════════════════════
 // 🏠 DASHBOARD PRINCIPAL
 // ══════════════════════════════════════════════════════
 export default function Dashboard({ onBack }) {
@@ -1386,7 +1105,6 @@ export default function Dashboard({ onBack }) {
   const [lipSyncClips,   setLipSyncClips]   = useState(null)
   const [cancelled,      setCancelled]      = useState(false)
   const [editModal,      setEditModal]      = useState(null)
-  const [activeTab,      setActiveTab]      = useState(2) // 0=Resultado 1=Editor 2=Tela
   const pollRef = useRef()
 
   useEffect(() => {
@@ -1438,10 +1156,6 @@ export default function Dashboard({ onBack }) {
     // ✅ FIX C: atualiza lipSyncClips se houver regen individual em andamento
     if (jobStatus.lipsync_clips) {
       setLipSyncClips(jobStatus.lipsync_clips)
-    }
-    // Vai para aba Resultado automaticamente quando merge concluir
-    if (jobStatus.merge_status === 'completed' && jobStatus.merge_url) {
-      setActiveTab(0)
     }
   }, [jobStatus])
 
@@ -1646,100 +1360,11 @@ export default function Dashboard({ onBack }) {
         <LeftPanel fileName={fileName} jobStatus={jobStatus} onReset={reset} />
 
         <div style={{ flex:1, minWidth:0 }}>
-          {/* ── 3 ABAS FUNCIONAIS ── */}
           <div style={{ display:'flex', gap:6, marginBottom:18 }}>
-            {[
-              { label:'Resultado', icon:'🎬', idx:0 },
-              { label:'Editor',    icon:'🎛️', idx:1 },
-              { label:'Tela',      icon:'🗺️', idx:2 },
-            ].map(({ label, icon, idx }) => (
-              <div key={idx} onClick={() => setActiveTab(idx)}
-                style={{
-                  padding:'7px 16px', borderRadius:8, fontSize:13, fontWeight:500, cursor:'pointer',
-                  display:'flex', alignItems:'center', gap:6,
-                  background: activeTab===idx ? 'rgba(249,115,22,.1)' : 'rgba(255,255,255,.04)',
-                  border: activeTab===idx ? '1px solid rgba(249,115,22,.3)' : '1px solid rgba(255,255,255,.06)',
-                  color: activeTab===idx ? '#f97316' : '#6b7280',
-                  transition:'all .2s'
-                }}>
-                <span>{icon}</span><span>{label}</span>
-              </div>
+            {['Results','Canvas'].map((tab,i) => (
+              <div key={tab} style={{ padding:'7px 16px', borderRadius:8, fontSize:13, fontWeight:500, cursor:'pointer', background: i===1 ? 'rgba(249,115,22,.1)' : 'rgba(255,255,255,.04)', border: i===1 ? '1px solid rgba(249,115,22,.25)' : '1px solid rgba(255,255,255,.06)', color: i===1 ? '#f97316' : '#6b7280' }}>{tab}</div>
             ))}
           </div>
-
-          {/* ══ ABA 0: RESULTADO ══ */}
-          {activeTab === 0 && (
-            <div style={{ display:'flex', flexDirection:'column', gap:16, animation:'fadeUp .4s ease' }}>
-              {jobStatus?.merge_url ? (
-                /* Vídeo final disponível */
-                <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(34,197,94,.2)', borderRadius:16, overflow:'hidden' }}>
-                  <div style={{ padding:'14px 20px', display:'flex', alignItems:'center', justifyContent:'space-between', borderBottom:'1px solid rgba(255,255,255,.06)' }}>
-                    <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                      <span style={{ fontSize:20 }}>🎉</span>
-                      <div>
-                        <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:14, letterSpacing:2, color:'#fff' }}>VIDEOCLIPE FINAL</div>
-                        <div style={{ color:'#22c55e', fontSize:11 }}>Pronto para download e publicação</div>
-                      </div>
-                    </div>
-                    <div style={{ display:'flex', gap:8 }}>
-                      <a href={jobStatus.merge_url} target="_blank" rel="noreferrer"
-                        style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'8px 16px', background:'rgba(34,197,94,.1)', border:'1px solid rgba(34,197,94,.3)', color:'#22c55e', borderRadius:10, fontSize:12, fontWeight:600, textDecoration:'none' }}>
-                        ▶ Assistir
-                      </a>
-                      <button onClick={() => forceDownload(jobStatus.merge_url, `clipvox_${jobId}.mp4`)}
-                        style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'8px 16px', background:'rgba(249,115,22,.1)', border:'1px solid rgba(249,115,22,.3)', color:'#f97316', borderRadius:10, fontSize:12, fontWeight:600, cursor:'pointer' }}>
-                        ⬇ Baixar MP4
-                      </button>
-                    </div>
-                  </div>
-                  <video src={jobStatus.merge_url} controls style={{ width:'100%', display:'block', maxHeight:480, background:'#000' }} />
-                  <div style={{ padding:'12px 20px', display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
-                    {[
-                      { label:'🎵 Música',  value: jobStatus.audio_filename || fileName },
-                      { label:'⏱️ Duração', value: jobStatus.audio_duration ? `${Math.floor(jobStatus.audio_duration/60)}:${String(Math.floor(jobStatus.audio_duration%60)).padStart(2,'0')}` : '—' },
-                      { label:'🎬 Cenas',   value: `${jobStatus.scenes?.length || 0} cenas geradas` },
-                    ].map((item, i) => (
-                      <div key={i} style={{ background:'rgba(255,255,255,.04)', borderRadius:10, padding:'10px 12px' }}>
-                        <div style={{ color:'#6b7280', fontSize:10, marginBottom:3 }}>{item.label}</div>
-                        <div style={{ color:'#fff', fontSize:12, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.value}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                /* Ainda em produção */
-                <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:'72px 24px', textAlign:'center' }}>
-                  <div style={{ fontSize:52, marginBottom:16 }}>🎬</div>
-                  <div style={{ color:'#fff', fontSize:16, fontWeight:600, marginBottom:8 }}>Videoclipe em produção</div>
-                  <div style={{ color:'#6b7280', fontSize:13, marginBottom:6 }}>Acompanhe o progresso na aba <strong style={{ color:'#f97316' }}>Tela</strong></div>
-                  <div style={{ color:'#4b5563', fontSize:12 }}>O vídeo final aparecerá aqui após o Merge Final</div>
-                  {jobStatus?.current_step && (
-                    <div style={{ marginTop:20, display:'inline-flex', alignItems:'center', gap:8, background:'rgba(249,115,22,.08)', border:'1px solid rgba(249,115,22,.2)', borderRadius:8, padding:'8px 16px' }}>
-                      <div style={{ width:8, height:8, borderRadius:'50%', background:'#f97316', animation:'pulse 1.4s ease infinite' }} />
-                      <span style={{ color:'#f97316', fontSize:12 }}>
-                        {({'plan':'Planejando...','analyzing':'Analisando áudio...','creative':'Gerando conceito...','scenes':'Gerando imagens...','segments':'Gerando vídeos...','merge':'Merge final...'})[jobStatus.current_step] || 'Processando...'}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ══ ABA 1: EDITOR ══ */}
-          {activeTab === 1 && (
-            <EditorPanel
-              scenes={jobStatus?.scenes}
-              completedClips={completedClips}
-              jobStatus={jobStatus}
-              onEditScene={sc => setEditModal({ item: sc, type: 'scene' })}
-              onEditClip={handleEditClip}
-              fileName={fileName}
-            />
-          )}
-
-          {/* ══ ABA 2: TELA — conteúdo original do Canvas ══ */}
-          {activeTab === 2 && (<>
 
           {!jobStatus && (
             <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:'56px 24px', textAlign:'center' }}>
@@ -1758,14 +1383,24 @@ export default function Dashboard({ onBack }) {
 
           {jobStatus?.creative_concept && <CreativeConceptCard concept={jobStatus.creative_concept} />}
           {jobStatus?.scenes && (
-            <div style={{ marginTop:16 }}>
+            <>
+              <PipelineConnector
+                done={!!jobStatus.scenes?.some(s => s.image_url)}
+                active={jobStatus.current_step === 'scenes'}
+                label="CENAS GERADAS"
+              />
               <ScenesGrid scenes={jobStatus.scenes} jobId={jobId}
                 onEditScene={sc => setEditModal({ item: sc, type: 'scene' })} />
-            </div>
+            </>
           )}
 
           {jobStatus?.status === 'completed' && jobId && (
             <>
+              <PipelineConnector
+                done={jobStatus.videos_status === 'completed'}
+                active={jobStatus.videos_status === 'processing' || jobStatus.videos_status === 'retrying'}
+                label="SEGMENTOS DE VÍDEO"
+              />
               <VideoClipsPanel
                 jobId={jobId}
                 jobStatus={jobStatus}
@@ -1775,38 +1410,53 @@ export default function Dashboard({ onBack }) {
               />
 
               {(completedClips?.some(c => c.success) || lipSyncWasStuck) && !lipSyncDone && (
-                <LipSyncPanel
-                  jobId={jobId}
-                  videoClips={completedClips}
-                  onLipSyncCompleted={handleLipSyncCompleted}
-                  initialLipSyncStatus={jobStatus?.lipsync_status}
-                  onCancel={handleCancel}
-                  onRetrySyncClip={handleRetrySyncClip}
-                  lipSyncClips={lipSyncClips}
-                />
+                <>
+                  <PipelineConnector
+                    done={false}
+                    active={jobStatus.lipsync_status === 'processing'}
+                    label="LIP SYNC"
+                  />
+                  <LipSyncPanel
+                    jobId={jobId}
+                    videoClips={completedClips}
+                    onLipSyncCompleted={handleLipSyncCompleted}
+                    initialLipSyncStatus={jobStatus?.lipsync_status}
+                    onCancel={handleCancel}
+                    onRetrySyncClip={handleRetrySyncClip}
+                    lipSyncClips={lipSyncClips}
+                  />
+                </>
               )}
 
               {lipSyncDone && lipSyncClips?.some(c => c.lipsync_error) && (
-                <LipSyncPanel
-                  jobId={jobId}
-                  videoClips={completedClips}
-                  onLipSyncCompleted={handleLipSyncCompleted}
-                  initialLipSyncStatus="completed"
-                  initialLipUrl={lipSyncUrl}
-                  onCancel={handleCancel}
-                  onRetrySyncClip={handleRetrySyncClip}
-                  lipSyncClips={lipSyncClips}
-                />
+                <>
+                  <PipelineConnector
+                    done={true}
+                    active={false}
+                    label="LIP SYNC"
+                  />
+                  <LipSyncPanel
+                    jobId={jobId}
+                    videoClips={completedClips}
+                    onLipSyncCompleted={handleLipSyncCompleted}
+                    initialLipSyncStatus="completed"
+                    initialLipUrl={lipSyncUrl}
+                    onCancel={handleCancel}
+                    onRetrySyncClip={handleRetrySyncClip}
+                    lipSyncClips={lipSyncClips}
+                  />
+                </>
               )}
 
               {completedClips?.some(c => c.success) && lipSyncDone && (
-                <MergePanel
-                  jobId={jobId}
-                  videoClips={completedClips}
-                  lipSyncUrl={lipSyncUrl}
-                  initialMergeStatus={jobStatus?.merge_status}
-                  initialMergeUrl={jobStatus?.merge_url}
-                />
+                <>
+                  <PipelineConnector
+                    done={jobStatus.merge_status === 'completed'}
+                    active={jobStatus.merge_status === 'processing'}
+                    label="MERGE FINAL"
+                  />
+                  <MergePanel jobId={jobId} videoClips={completedClips} lipSyncUrl={lipSyncUrl} />
+                </>
               )}
             </>
           )}
@@ -1819,8 +1469,6 @@ export default function Dashboard({ onBack }) {
               <button onClick={reset} style={{ background:'rgba(255,255,255,.06)', color:'#fff', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'10px 24px', fontSize:14, cursor:'pointer' }}>🔄 Tentar Novamente</button>
             </div>
           )}
-
-          </>)}
         </div>
       </div>
 
