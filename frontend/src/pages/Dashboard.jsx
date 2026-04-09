@@ -917,7 +917,7 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncSta
   )
 }
 
-function MergePanel({ jobId, videoClips, lipSyncUrl }) {
+function MergePanel({ jobId, videoClips, lipSyncUrl, onMergeCompleted }) {
   const [mergeStatus, setMergeStatus] = useState(null)
   const [mergeUrl,    setMergeUrl]    = useState(null)
   const [mergeError,  setMergeError]  = useState(null)
@@ -941,6 +941,9 @@ function MergePanel({ jobId, videoClips, lipSyncUrl }) {
           if (s.merge_status === 'completed' || s.merge_status === 'failed') {
             clearInterval(pollRef.current); setLoading(false)
             if (s.merge_status === 'failed') setMergeError('Merge falhou. Tente novamente.')
+            if (s.merge_status === 'completed' && s.merge_url && onMergeCompleted) {
+              onMergeCompleted(s.merge_url)
+            }
           }
         } catch(e) { console.warn('Polling merge:', e) }
       }, 4000)
@@ -1014,28 +1017,26 @@ function MergePanel({ jobId, videoClips, lipSyncUrl }) {
 }
 
 // ══════════════════════════════════════════════════════
-// 🟢 PIPELINE CONNECTOR — linha verde entre etapas (estilo Freebeat)
+// 🟢 PIPELINE CONNECTOR — linha verde entre etapas
 // ══════════════════════════════════════════════════════
 function PipelineConnector({ done, active, label }) {
-  const color     = done ? '#22c55e' : active ? '#f97316' : '#1f2937'
-  const textColor = done ? '#22c55e' : active ? '#f97316' : '#374151'
+  const color     = done ? '#22c55e' : active ? '#f97316' : '#374151'
+  const textColor = done ? '#22c55e' : active ? '#f97316' : '#4b5563'
+  const bg        = done ? 'rgba(34,197,94,.1)' : active ? 'rgba(249,115,22,.1)' : 'rgba(255,255,255,.04)'
+  const border    = done ? 'rgba(34,197,94,.3)' : active ? 'rgba(249,115,22,.3)' : 'rgba(255,255,255,.08)'
   return (
-    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', width:'100%', padding:'4px 0' }}>
-      <div style={{ width:2, height:18, background:`linear-gradient(to bottom, ${color}44, ${color})`, borderRadius:1 }} />
-      <div style={{
-        display:'flex', alignItems:'center', gap:6,
-        background: done ? 'rgba(34,197,94,.08)' : active ? 'rgba(249,115,22,.08)' : 'rgba(255,255,255,.03)',
-        border:`1px solid ${done ? 'rgba(34,197,94,.25)' : active ? 'rgba(249,115,22,.25)' : 'rgba(255,255,255,.06)'}`,
-        borderRadius:20, padding:'4px 14px'
-      }}>
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', width:'100%', padding:'2px 0' }}>
+      <div style={{ width:2, height:20, background:`linear-gradient(to bottom, transparent, ${color})` }} />
+      <div style={{ display:'flex', alignItems:'center', gap:7, background:bg, border:`1px solid ${border}`, borderRadius:20, padding:'5px 16px' }}>
         <div style={{
-          width:7, height:7, borderRadius:'50%', background:color,
-          boxShadow: done ? '0 0 8px rgba(34,197,94,.5)' : active ? '0 0 8px rgba(249,115,22,.5)' : 'none',
+          width:8, height:8, borderRadius:'50%', background:color, flexShrink:0,
+          boxShadow: active ? `0 0 10px ${color}` : done ? `0 0 6px ${color}88` : 'none',
           animation: active ? 'pulse 1.4s ease infinite' : 'none'
         }} />
-        <span style={{ color:textColor, fontSize:10, fontWeight:600, letterSpacing:.5 }}>{label}</span>
+        <span style={{ color:textColor, fontSize:11, fontWeight:600, letterSpacing:.5 }}>{label}</span>
+        {done && <span style={{ color:'#22c55e', fontSize:11 }}>✓</span>}
       </div>
-      <div style={{ width:2, height:18, background:`linear-gradient(to bottom, ${color}, ${color}44)`, borderRadius:1 }} />
+      <div style={{ width:2, height:20, background:`linear-gradient(to bottom, ${color}, transparent)` }} />
     </div>
   )
 }
@@ -1105,6 +1106,8 @@ export default function Dashboard({ onBack }) {
   const [lipSyncClips,   setLipSyncClips]   = useState(null)
   const [cancelled,      setCancelled]      = useState(false)
   const [editModal,      setEditModal]      = useState(null)
+  const [activeTab,      setActiveTab]      = useState(1) // 0=Results 1=Canvas
+  const [mergeUrl,       setMergeUrl]       = useState(null)
   const pollRef = useRef()
 
   useEffect(() => {
@@ -1156,6 +1159,11 @@ export default function Dashboard({ onBack }) {
     // ✅ FIX C: atualiza lipSyncClips se houver regen individual em andamento
     if (jobStatus.lipsync_clips) {
       setLipSyncClips(jobStatus.lipsync_clips)
+    }
+    // Auto-switch para aba Resultado quando merge concluir
+    if (jobStatus.merge_status === 'completed' && jobStatus.merge_url) {
+      setMergeUrl(jobStatus.merge_url)
+      setActiveTab(0)
     }
   }, [jobStatus])
 
@@ -1361,10 +1369,56 @@ export default function Dashboard({ onBack }) {
 
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:'flex', gap:6, marginBottom:18 }}>
-            {['Results','Canvas'].map((tab,i) => (
-              <div key={tab} style={{ padding:'7px 16px', borderRadius:8, fontSize:13, fontWeight:500, cursor:'pointer', background: i===1 ? 'rgba(249,115,22,.1)' : 'rgba(255,255,255,.04)', border: i===1 ? '1px solid rgba(249,115,22,.25)' : '1px solid rgba(255,255,255,.06)', color: i===1 ? '#f97316' : '#6b7280' }}>{tab}</div>
+            {[{label:'🎬 Resultado',idx:0},{label:'🗺️ Tela',idx:1}].map(({label,idx}) => (
+              <div key={idx} onClick={() => setActiveTab(idx)}
+                style={{ padding:'7px 16px', borderRadius:8, fontSize:13, fontWeight:500, cursor:'pointer',
+                  background: activeTab===idx ? 'rgba(249,115,22,.1)' : 'rgba(255,255,255,.04)',
+                  border: activeTab===idx ? '1px solid rgba(249,115,22,.3)' : '1px solid rgba(255,255,255,.06)',
+                  color: activeTab===idx ? '#f97316' : '#6b7280', transition:'all .2s' }}>{label}</div>
             ))}
           </div>
+
+          {/* ══ ABA 0: RESULTADO ══ */}
+          {activeTab === 0 && (
+            <div style={{ animation:'fadeUp .4s ease' }}>
+              {(mergeUrl || jobStatus?.merge_url) ? (
+                <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(34,197,94,.2)', borderRadius:16, overflow:'hidden' }}>
+                  <div style={{ padding:'14px 20px', borderBottom:'1px solid rgba(255,255,255,.06)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                      <span style={{ fontSize:20 }}>🎉</span>
+                      <div>
+                        <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:14, letterSpacing:2, color:'#fff' }}>VIDEOCLIPE FINAL</div>
+                        <div style={{ color:'#22c55e', fontSize:11 }}>Pronto para download e publicação</div>
+                      </div>
+                    </div>
+                    <div style={{ display:'flex', gap:8 }}>
+                      <a href={mergeUrl || jobStatus?.merge_url} target="_blank" rel="noreferrer"
+                        style={{ padding:'8px 16px', background:'rgba(34,197,94,.1)', border:'1px solid rgba(34,197,94,.3)', color:'#22c55e', borderRadius:10, fontSize:12, fontWeight:600, textDecoration:'none' }}>▶ Assistir</a>
+                      <a href={mergeUrl || jobStatus?.merge_url} download={`clipvox_${jobId}.mp4`}
+                        style={{ padding:'8px 16px', background:'rgba(249,115,22,.1)', border:'1px solid rgba(249,115,22,.3)', color:'#f97316', borderRadius:10, fontSize:12, fontWeight:600, textDecoration:'none' }}>⬇ Baixar MP4</a>
+                    </div>
+                  </div>
+                  <video src={mergeUrl || jobStatus?.merge_url} controls style={{ width:'100%', display:'block', maxHeight:480, background:'#000' }} />
+                </div>
+              ) : (
+                <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:'72px 24px', textAlign:'center' }}>
+                  <div style={{ fontSize:52, marginBottom:16 }}>🎬</div>
+                  <div style={{ color:'#fff', fontSize:16, fontWeight:600, marginBottom:8 }}>Videoclipe em produção</div>
+                  <div style={{ color:'#6b7280', fontSize:13, marginBottom:6 }}>Acompanhe o progresso na aba <strong style={{ color:'#f97316', cursor:'pointer' }} onClick={() => setActiveTab(1)}>Tela</strong></div>
+                  <div style={{ color:'#4b5563', fontSize:12 }}>O vídeo final aparecerá aqui após o Merge Final</div>
+                  {jobStatus?.current_step && (
+                    <div style={{ marginTop:20, display:'inline-flex', alignItems:'center', gap:8, background:'rgba(249,115,22,.08)', border:'1px solid rgba(249,115,22,.2)', borderRadius:8, padding:'8px 16px' }}>
+                      <div style={{ width:8, height:8, borderRadius:'50%', background:'#f97316', animation:'pulse 1.4s ease infinite' }} />
+                      <span style={{ color:'#f97316', fontSize:12 }}>Processando...</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ══ ABA 1: TELA ══ */}
+          {activeTab === 1 && <>
 
           {!jobStatus && (
             <div style={{ background:'rgba(16,16,24,.85)', border:'1px solid rgba(255,255,255,.07)', borderRadius:16, padding:'56px 24px', textAlign:'center' }}>
@@ -1385,7 +1439,7 @@ export default function Dashboard({ onBack }) {
           {jobStatus?.scenes && (
             <>
               <PipelineConnector
-                done={!!jobStatus.scenes?.some(s => s.image_url)}
+                done={jobStatus.scenes.some(s => s.image_url)}
                 active={jobStatus.current_step === 'scenes'}
                 label="CENAS GERADAS"
               />
@@ -1430,11 +1484,7 @@ export default function Dashboard({ onBack }) {
 
               {lipSyncDone && lipSyncClips?.some(c => c.lipsync_error) && (
                 <>
-                  <PipelineConnector
-                    done={true}
-                    active={false}
-                    label="LIP SYNC"
-                  />
+                  <PipelineConnector done={true} active={false} label="LIP SYNC" />
                   <LipSyncPanel
                     jobId={jobId}
                     videoClips={completedClips}
@@ -1455,7 +1505,16 @@ export default function Dashboard({ onBack }) {
                     active={jobStatus.merge_status === 'processing'}
                     label="MERGE FINAL"
                   />
-                  <MergePanel jobId={jobId} videoClips={completedClips} lipSyncUrl={lipSyncUrl} />
+                  <MergePanel
+                    jobId={jobId}
+                    videoClips={completedClips}
+                    lipSyncUrl={lipSyncUrl}
+                    onMergeCompleted={(url) => {
+                      setMergeUrl(url)
+                      setJobStatus(prev => ({ ...prev, merge_url: url, merge_status: 'completed' }))
+                      setActiveTab(0)
+                    }}
+                  />
                 </>
               )}
             </>
@@ -1469,6 +1528,7 @@ export default function Dashboard({ onBack }) {
               <button onClick={reset} style={{ background:'rgba(255,255,255,.06)', color:'#fff', border:'1px solid rgba(255,255,255,.1)', borderRadius:10, padding:'10px 24px', fontSize:14, cursor:'pointer' }}>🔄 Tentar Novamente</button>
             </div>
           )}
+          </>}
         </div>
       </div>
 
