@@ -31,11 +31,11 @@ except Exception:
     fal_client = None
 
 DEMUCS_ENDPOINT    = "fal-ai/demucs"
-LATENTSYNC_ENDPOINT = "fal-ai/latentsync"
+KLING_LIPSYNC_ENDPOINT = "fal-ai/kling-video/lipsync/audio-to-video"  # $0.014/5s
 
 # Cascata: (endpoint, model_param_or_None)
 # lipsync-1.7.1:      fallback estável
-# LatentSync — ByteDance, open source, $0.20 fixo para vídeos até 40s
+# lipsync-2 — ByteDance, open source, $0.20 fixo para vídeos até 40s
 # Não usa parâmetro "model" — endpoint direto
 
 
@@ -234,26 +234,26 @@ def _is_retryable(error_str: str) -> bool:
     return any(k in low for k in _RETRYABLE_ERRORS)
 
 
-def _run_latentsync(video_url: str, audio_url: str,
-                    timeout: int = FAL_REQUEST_TIMEOUT_SECONDS,
-                    max_retries: int = 3) -> Dict[str, Any]:
+def _run_kling_lipsync(video_url: str, audio_url: str,
+                       timeout: int = FAL_REQUEST_TIMEOUT_SECONDS,
+                       max_retries: int = 3) -> Dict[str, Any]:
     """
-    LatentSync (ByteDance) — fal-ai/latentsync
-    Preço: $0.20 fixo para vídeos até 40s
+    Kling LipSync — fal-ai/kling-video/lipsync/audio-to-video
+    Preço: $0.014 por clipe de 5s (~$0.59 para 3.5min)
     Aceita só video_url + audio_url, sem parâmetros extras.
     """
-    last_error = "LatentSync falhou"
+    last_error = "Kling LipSync falhou"
 
     for attempt in range(1, max_retries + 1):
         if attempt > 1:
             wait = 15 * attempt
-            print(f"      ↩ retry {attempt}/{max_retries} em {wait}s (LatentSync)...")
+            print(f"      ↩ retry {attempt}/{max_retries} em {wait}s (Kling LipSync)...")
             time.sleep(wait)
 
         try:
-            print(f"   🎤 LatentSync: tentativa {attempt}/{max_retries}...")
+            print(f"   🎤 Kling LipSync: tentativa {attempt}/{max_retries}...")
             handler    = fal_client.submit(
-                LATENTSYNC_ENDPOINT,
+                KLING_LIPSYNC_ENDPOINT,
                 arguments={"video_url": video_url, "audio_url": audio_url},
             )
             request_id = getattr(handler, "request_id", "")
@@ -291,17 +291,17 @@ def _run_latentsync(video_url: str, audio_url: str,
                             return {"success": False, "error": err_str}
 
                         data  = _fal_unwrap(payload)
-                        # LatentSync retorna { "video": {"url": "..."} }
+                        # Kling LipSync retorna { "video": {"url": "..."} }
                         video = data.get("video") or {}
                         url   = video.get("url") if isinstance(video, dict) else None
                         if not url:
                             url = data.get("output_url") or data.get("video_url")
                         if url:
-                            print(f"   ✅ LatentSync concluído: {url[:80]}")
+                            print(f"   ✅ Kling LipSync concluído: {url[:80]}")
                             return {"success": True, "video_url": url,
-                                    "task_id": request_id, "model_used": "fal-ai/latentsync"}
+                                    "task_id": request_id, "model_used": "fal-ai/sync-lipsync/v2"}
                         return {"success": False,
-                                "error": f"LatentSync concluiu sem video.url. Keys: {list(data.keys())}"}
+                                "error": f"Kling LipSync concluiu sem video.url. Keys: {list(data.keys())}"}
 
                     elif status_name in {"FAILED", "ERROR", "CANCELLED"}:
                         err_msg = None
@@ -311,7 +311,7 @@ def _run_latentsync(video_url: str, audio_url: str,
                             err_msg = data.get("error") or data.get("message")
                         except Exception:
                             pass
-                        err        = err_msg or f"LatentSync: {status_name}"
+                        err        = err_msg or f"Kling LipSync: {status_name}"
                         last_error = err
                         if _is_retryable(err):
                             break
@@ -327,7 +327,7 @@ def _run_latentsync(video_url: str, audio_url: str,
 
                 time.sleep(FAL_POLL_INTERVAL_SECONDS)
             else:
-                last_error = f"LatentSync timeout ({timeout}s)"
+                last_error = f"Kling LipSync timeout ({timeout}s)"
                 print(f"   ⚠️ {last_error}")
 
         except Exception as submit_err:
@@ -353,15 +353,15 @@ def generate_lipsync(
     origin_task_id: str = "",
 ) -> Dict[str, Any]:
     """
-    Pipeline: Demucs (vocals) → LatentSync (ByteDance)
-    Custo: $0.20 fixo para vídeos até 40s (~$0.20 por clipe de 5s)
+    Pipeline: Demucs (vocals) → Kling LipSync
+    Custo: $0.014 por clipe de 5s (~$0.59 para 3.5min)
     Interface idêntica — troca direta no videos.py sem outras mudanças.
     """
     try:
         _require_fal()
         safe_job_id = job_id or f"sync_{int(time.time())}"
         print(f"\n{'='*60}")
-        print(f"🎤 Demucs + LatentSync — job {safe_job_id[:12]}")
+        print(f"🎤 Demucs + Kling LipSync — job {safe_job_id[:12]}")
         print(f"{'='*60}")
 
         # 1. Vídeo local + duração
@@ -410,12 +410,12 @@ def generate_lipsync(
         if not video_url:
             return {"success": False, "error": "Falha ao publicar vídeo no R2"}
         if not _check_url(video_url, "Vídeo para Sync Labs"):
-            return {"success": False, "error": "Vídeo não acessível pelo LatentSync"}
+            return {"success": False, "error": "Vídeo não acessível pelo Kling LipSync"}
 
-        # 6. LatentSync
-        result = _run_latentsync(video_url, final_audio_url)
+        # 6. Kling LipSync
+        result = _run_kling_lipsync(video_url, final_audio_url)
         if not result.get("success"):
-            return {"success": False, "error": result.get("error", "LatentSync falhou")}
+            return {"success": False, "error": result.get("error", "Kling LipSync falhou")}
 
         final_video_url = result["video_url"]
 
@@ -435,7 +435,7 @@ def generate_lipsync(
             "video_url":      r2_url or final_video_url,
             "provider_url":   final_video_url,
             "task_id":        result.get("task_id", ""),
-            "provider":       "fal.ai / Demucs + Sync Labs",
+            "provider":       "fal.ai / Demucs + Kling LipSync",
             "vocals_source":  vocals_used,
             "model_used":     result.get("model_used", ""),
             "model_endpoint": result.get("model_used", ""),
