@@ -227,6 +227,11 @@ _RETRYABLE_ERRORS = (
     "504", "502", "503",
     "gateway timeout",
     "upstream connect error",
+    # Kling: URL do arquivo expirou ou inacessível temporariamente
+    "something went wrong when we tried to get the contents of the file",
+    "input_value_error",
+    "failed to fetch",
+    "could not load",
 )
 
 def _is_retryable(error_str: str) -> bool:
@@ -402,14 +407,18 @@ def generate_lipsync(
         else:
             print(f"   ⚠️ Demucs falhou — fallback: áudio completo")
 
-        # 5. URL pública do vídeo
-        if isinstance(face_source, str) and face_source.startswith(("http://", "https://")):
-            video_url = face_source
-        else:
-            video_url = _upload_to_r2(video_local, f"jobs/{safe_job_id}/lipsync_input.mp4")
+        # 5. URL pública do vídeo — sempre usa R2 para evitar expiração de URLs fal.media
+        # fal.media URLs expiram em minutos; clips processados sequencialmente
+        # ficam esperando e a URL expira antes do Kling tentar acessar
+        video_url = _upload_to_r2(video_local, f"jobs/{safe_job_id}/lipsync_input.mp4")
         if not video_url:
-            return {"success": False, "error": "Falha ao publicar vídeo no R2"}
-        if not _check_url(video_url, "Vídeo para Sync Labs"):
+            # fallback: tenta usar URL original se R2 falhar
+            if isinstance(face_source, str) and face_source.startswith(("http://", "https://")):
+                video_url = face_source
+                print(f"   ⚠️ R2 falhou — usando URL original (pode expirar)")
+            else:
+                return {"success": False, "error": "Falha ao publicar vídeo no R2"}
+        if not _check_url(video_url, "Vídeo para Kling LipSync"):
             return {"success": False, "error": "Vídeo não acessível pelo Kling LipSync"}
 
         # 6. Kling LipSync
