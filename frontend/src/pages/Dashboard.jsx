@@ -534,6 +534,7 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted, onCancel, onEdit
 
   useEffect(() => {
     if (videosStatus === 'processing' || videosStatus === 'retrying') {
+      if (!startTimeRef.current) startTimeRef.current = Date.now()
       pollRef.current = setInterval(async () => {
         try {
           const res    = await fetch(`${API_URL}/api/videos/status/${jobId}`)
@@ -580,7 +581,7 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted, onCancel, onEdit
   }
 
   const scenes      = jobStatus?.scenes || []
-  const totalClips  = scenes.filter(s => s.success).length
+  const totalClips  = scenes.filter(s => s.success).length || scenes.length
   const successClips = videoClips?.filter(c => c.success) || []
   const failedClips  = videoClips?.filter(c => !c.success || !c.video_url) || []
   const estimatedCost = (totalClips * (klingMode === 'std' ? 0.125 : 0.25)).toFixed(2)
@@ -601,6 +602,16 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted, onCancel, onEdit
           </div>
         )}
       </div>
+
+      {/* Progresso sempre visível quando há dados */}
+      {totalClips > 0 && (videosStatus === 'processing' || videosStatus === 'completed' || videosStatus === 'retrying') && (
+        <StageProgress
+          done={successClips.length}
+          total={totalClips}
+          color="#f97316"
+          startTime={startTimeRef.current}
+        />
+      )}
 
       {(!videosStatus || videosStatus === 'pending' || videosStatus === 'ready') && (
         <>
@@ -635,12 +646,6 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted, onCancel, onEdit
           <div style={{ width:44, height:44, margin:'0 auto 12px', border:'3px solid rgba(249,115,22,.2)', borderTop:'3px solid #f97316', borderRadius:'50%', animation:'spin .9s linear infinite' }} />
           <div style={{ color:'#fff', fontSize:14, fontWeight:600, marginBottom:4 }}>Gerando clipes com Kling AI...</div>
           <div style={{ color:'#6b7280', fontSize:12 }}>Cada clipe leva ~1-3 minutos</div>
-          <StageProgress
-            done={(videoClips || []).filter(c => c.success && c.video_url).length}
-            total={totalClips}
-            color="#f97316"
-            startTime={startTimeRef.current}
-          />
           {onCancel && <button onClick={onCancel} style={{ marginTop:14, background:'rgba(239,68,68,.1)', border:'1px solid rgba(239,68,68,.3)', borderRadius:10, padding:'8px 20px', color:'#ef4444', fontSize:12, cursor:'pointer' }}>🛑 Cancelar</button>}
         </div>
       )}
@@ -767,6 +772,16 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncSta
         )}
       </div>
 
+      {/* Progresso sempre visível durante e após o lip sync */}
+      {(status === 'processing' || status === 'completed') && (videoClips || []).filter(c => c.success && c.video_url).length > 0 && (
+        <StageProgress
+          done={(lipSyncClips || []).filter(c => c.success && !c.lipsync_error).length}
+          total={(videoClips || []).filter(c => c.success && c.video_url).length}
+          color="#a78bfa"
+          startTime={startTimeRef.current}
+        />
+      )}
+
       {/* ESTADO TRAVADO */}
       {status === 'stuck' && (
         <div style={{ marginBottom:16 }}>
@@ -836,12 +851,6 @@ function LipSyncPanel({ jobId, videoClips, onLipSyncCompleted, initialLipSyncSta
           <div style={{ width:44, height:44, margin:'0 auto 12px', border:'3px solid rgba(139,92,246,.2)', borderTop:'3px solid #7c3aed', borderRadius:'50%', animation:'spin .9s linear infinite' }} />
           <div style={{ color:'#fff', fontSize:14, fontWeight:600, marginBottom:4 }}>Aplicando Lip Sync...</div>
           <div style={{ color:'#6b7280', fontSize:12 }}>Demucs extraindo vocals → Kling sincronizando</div>
-          <StageProgress
-            done={(lipSyncClips || []).filter(c => c.success && !c.lipsync_error).length}
-            total={(videoClips || []).filter(c => c.success && c.video_url).length || 1}
-            color="#a78bfa"
-            startTime={startTimeRef.current}
-          />
           {onCancel && <button onClick={onCancel} style={{ marginTop:14, background:'rgba(239,68,68,.1)', border:'1px solid rgba(239,68,68,.3)', borderRadius:10, padding:'8px 20px', color:'#ef4444', fontSize:12, cursor:'pointer' }}>🛑 Cancelar</button>}
         </div>
       )}
