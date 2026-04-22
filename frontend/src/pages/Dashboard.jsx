@@ -529,7 +529,8 @@ function VideoClipsPanel({ jobId, jobStatus, onVideosCompleted, onCancel, onEdit
   const [klingMode,    setKlingMode]    = useState('std')
   const [generating,   setGenerating]   = useState(false)
   const [error,        setError]        = useState(null)
-  const pollRef = useRef()
+  const pollRef      = useRef()
+  const startTimeRef = useRef(null)
 
   useEffect(() => {
     const s = jobStatus?.videos_status
